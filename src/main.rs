@@ -1,7 +1,11 @@
 mod backup;
 mod config;
+mod device;
+mod launchd;
+mod restore;
 mod status;
 mod tui;
+mod update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

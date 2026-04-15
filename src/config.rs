@@ -6,13 +6,24 @@ use std::path::PathBuf;
 pub struct Config {
     /// Where backups are stored (e.g. ~/Backups/iOS or /Volumes/my-drive).
     pub backup_path: String,
+    /// Hour (0–23) at which launchd runs the daily backup.
+    #[serde(default = "default_hour")]
+    pub schedule_hour: u8,
+    /// Minute (0–59) at which launchd runs the daily backup.
+    #[serde(default = "default_minute")]
+    pub schedule_minute: u8,
 }
+
+fn default_hour() -> u8 { 2 }
+fn default_minute() -> u8 { 0 }
 
 impl Default for Config {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         Self {
             backup_path: home.join("Backups/iOS").to_string_lossy().into_owned(),
+            schedule_hour: default_hour(),
+            schedule_minute: default_minute(),
         }
     }
 }

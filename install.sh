@@ -8,8 +8,7 @@
 #   3. Installs the binary to /usr/local/bin/
 #   4. Installs and loads the launchd agent (daily backup at 2 am)
 #   5. Optionally configures the backup path
-#   6. Optionally pairs your iPhone via USB (setup.sh)
-#   7. Optionally runs a first backup
+#   6. Optionally runs a first backup
 
 set -uo pipefail
 
@@ -56,14 +55,6 @@ else
     ok "Rust ($(cargo --version))"
 fi
 
-if ! python3 -c "import pymobiledevice3" 2>/dev/null; then
-    info "Installing pymobiledevice3..."
-    pip3 install pymobiledevice3
-    ok "pymobiledevice3 installed"
-else
-    ok "pymobiledevice3"
-fi
-
 # ── Build ──────────────────────────────────────────────────────────────────────
 step "Building iphone-backup..."
 cd "$SCRIPT_DIR"
@@ -87,10 +78,6 @@ read -rp "  Backup path [$DEFAULT_PATH]: " BACKUP_PATH
 BACKUP_PATH="${BACKUP_PATH:-$DEFAULT_PATH}"
 mkdir -p "$BACKUP_PATH"
 
-CONFIG_DIR="$HOME/Library/Application Support/iphone-backup"
-# Use XDG config dir on macOS: ~/Library/Application Support is not the right one
-# Actually macOS config dir for dirs crate is ~/Library/Application Support
-# But we want ~/.config/iphone-backup per the config.rs code
 CONFIG_FILE="$HOME/.config/iphone-backup/config.toml"
 mkdir -p "$(dirname "$CONFIG_FILE")"
 cat > "$CONFIG_FILE" <<EOF
@@ -101,19 +88,12 @@ ok "Backup path: $BACKUP_PATH"
 
 # ── launchd agent ──────────────────────────────────────────────────────────────
 step "Installing launchd agent (runs daily at 2:00 am)..."
-cp "$SCRIPT_DIR/config/com.user.iphone-backup.plist" "$PLIST_DEST"
+sed "s|/usr/local/bin/iphone-backup|$BINARY_DEST|g" \
+    "$SCRIPT_DIR/config/com.user.iphone-backup.plist" > "$PLIST_DEST"
 launchctl unload "$PLIST_DEST" 2>/dev/null || true
 launchctl load "$PLIST_DEST"
 ok "Loaded: $PLIST_LABEL"
 info "Fires daily at 2:00 am while the Mac is awake."
-info "Manual trigger:  launchctl start $PLIST_LABEL"
-info "launchd log:     /tmp/iphone-backup-launchd.log"
-
-# ── Pair iPhone ────────────────────────────────────────────────────────────────
-step "iPhone pairing"
-if confirm "Pair an iPhone now? (USB cable required)"; then
-    bash "$SCRIPT_DIR/scripts/setup.sh"
-fi
 
 # ── First backup ───────────────────────────────────────────────────────────────
 step "First backup"
@@ -127,9 +107,11 @@ echo "╔═══════════════════════�
 echo "║   Setup complete                     ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
-echo "  Dashboard:   iphone-backup"
-echo "  Backup now:  launchctl start $PLIST_LABEL"
-echo "  Re-pair:     bash scripts/setup.sh"
-echo "  Restore:     bash scripts/restore.sh"
-echo "  Config:      $CONFIG_FILE"
+echo "  Open dashboard:  iphone-backup"
+echo "    [1] Dashboard  – run backups, view logs"
+echo "    [2] Restore    – restore a backup to a device"
+echo "    [3] Services   – manage the launchd agent, pair devices"
+echo ""
+echo "  Config:          $CONFIG_FILE"
+echo "  launchd log:     /tmp/iphone-backup-launchd.log"
 echo ""

@@ -20,6 +20,32 @@ fn log(msg: &str, tx: &Sender<String>, log_path: &Path) {
 }
 
 pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
+    // Verify the backup location is accessible before doing anything.
+    if let Err(e) = std::fs::read_dir(backup_path) {
+        let msg = format!(
+            "ERROR: Backup path '{}' is not accessible: {}. \
+             Check that the drive is mounted and the path exists.",
+            backup_path.display(),
+            e
+        );
+        let _ = tx.send(msg.clone());
+        // Write a minimal status so the TUI shows the failure.
+        let status_dir = backup_path.parent().unwrap_or(backup_path).join(".status");
+        if std::fs::create_dir_all(&status_dir).is_ok() {
+            let summary = serde_json::json!({
+                "last_run": chrono::Utc::now().to_rfc3339(),
+                "status": "no_storage",
+                "total_devices": 0,
+                "failed": 0,
+            });
+            let _ = std::fs::write(
+                status_dir.join("summary.json"),
+                serde_json::to_string_pretty(&summary)?,
+            );
+        }
+        return Ok(());
+    }
+
     let status_dir = backup_path.join(".status");
     std::fs::create_dir_all(&status_dir)?;
     let log_path = status_dir.join("ibackup.log");
