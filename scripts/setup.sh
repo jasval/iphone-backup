@@ -84,9 +84,23 @@ done
 
 echo ""
 echo "Done. $COPIED file(s) copied, $FAILED failed."
-echo ""
-echo "Verify the container sees the pairing files:"
-echo "  docker exec iphone-backup ls /var/lib/lockdown/"
-echo ""
-echo "Run a manual backup to confirm device discovery:"
-echo "  docker exec iphone-backup /usr/local/bin/ibackup.sh"
+
+if [[ $COPIED -gt 0 ]]; then
+    echo ""
+    echo "Verify the container sees the pairing files:"
+    echo "  docker exec iphone-backup ls /var/lib/lockdown/"
+    echo ""
+    # Offer to trigger a backup immediately
+    read -rp "Run a backup now? [y/N]: " DO_BACKUP
+    if [[ "${DO_BACKUP,,}" == "y" ]]; then
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        NAS_MOUNT="${NAS_MOUNT:-/Volumes/ios-backups}"
+        if ls "$NAS_MOUNT" &>/dev/null 2>&1; then
+            echo ""
+            NAS_MOUNT="$NAS_MOUNT" bash "$SCRIPT_DIR/mac-backup.sh"
+        else
+            echo "NAS not mounted at $NAS_MOUNT — run the backup manually:"
+            echo "  bash scripts/mac-backup.sh"
+        fi
+    fi
+fi
