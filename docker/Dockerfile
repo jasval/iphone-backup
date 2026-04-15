@@ -12,13 +12,15 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
     cron \
     curl \
     jq \
     rsync \
+    gcc \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pymobiledevice3 in a venv (avoids PEP 668 system-packages conflict)
 RUN python3 -m venv /opt/pymobile && \
     /opt/pymobile/bin/pip install --upgrade pip pymobiledevice3
 
