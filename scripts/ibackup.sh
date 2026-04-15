@@ -29,16 +29,14 @@ write_manifest() {
         > "$STATUS_DIR/manifest.json"
 }
 
-# ── Attempt pymobiledevice3 tunnel for each Tailscale IP ────────────────────
+# ── Tailscale: not yet implemented ──────────────────────────────────────────
+# IPHONE_TAILSCALE_IPS is reserved for future use. pymobiledevice3's remote
+# start-tunnel does not support direct IP connections; Tailscale backup
+# requires mDNS to be bridged or a tunneld-based approach. For now, LAN
+# (mDNS/Bonjour) is the only supported discovery method.
 if [[ -n "$TAILSCALE_IPS" ]]; then
-    log "Opening Tailscale tunnels for: $TAILSCALE_IPS"
-    IFS=',' read -ra IPS <<< "$TAILSCALE_IPS"
-    for IP in "${IPS[@]}"; do
-        IP="$(echo "$IP" | tr -d '[:space:]')"
-        log "Tunnel → $IP"
-        pymobiledevice3 remote start-tunnel --host "$IP" &>/dev/null &
-        sleep 10
-    done
+    log "NOTE: IPHONE_TAILSCALE_IPS is set but Tailscale backup is not yet supported."
+    log "      Devices will be discovered via LAN (mDNS) only."
 fi
 
 # ── Discover all available devices ──────────────────────────────────────────

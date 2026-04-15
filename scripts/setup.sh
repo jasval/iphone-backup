@@ -1,50 +1,79 @@
 #!/usr/bin/env bash
 # setup.sh – Run on your Mac (NOT inside Docker).
-# Copies iOS pairing .plist files to the NAS over SCP so the container
-# can discover and back up your devices over Wi-Fi or Tailscale.
+# Pairs your iPhone via USB and copies the pairing record to the NAS.
+# Requires: pip3 install pymobiledevice3
 #
 # Usage: bash scripts/setup.sh
 
 set -euo pipefail
 
-LOCKDOWN_SRC="/var/db/lockdown"
+# Check pymobiledevice3 is installed
+if ! python3 -c "import pymobiledevice3" 2>/dev/null; then
+    echo "Installing pymobiledevice3..."
+    pip3 install pymobiledevice3
+fi
 
 echo "========================================"
 echo "  iPhone Backup – Pairing File Sync"
 echo "========================================"
 echo ""
-
-PLISTS=("$LOCKDOWN_SRC"/*.plist)
-if [[ ! -e "${PLISTS[0]}" ]]; then
-    echo "ERROR: No .plist files found at $LOCKDOWN_SRC"
-    echo ""
-    echo "  Make sure you have trusted this Mac on each iPhone:"
-    echo "  1. Plug iPhone into Mac via USB"
-    echo "  2. Tap 'Trust This Computer' on the iPhone"
-    echo "  3. Re-run this script"
-    exit 1
-fi
-
-echo "Found ${#PLISTS[@]} pairing file(s):"
-for f in "${PLISTS[@]}"; do
-    echo "  $(basename "$f")"
-done
+echo "Make sure your iPhone is plugged in via USB and unlocked."
 echo ""
 
 read -rp "NAS SSH target (e.g. admin@192.168.1.100): " NAS_TARGET
-read -rp "Lockdown path on NAS [/volume1/iphone-backups/.lockdown]: " NAS_PATH
-NAS_PATH="${NAS_PATH:-/volume1/iphone-backups/.lockdown}"
+read -rp "Lockdown path on NAS [/volume1/ios-backups/.lockdown]: " NAS_PATH
+NAS_PATH="${NAS_PATH:-/volume1/ios-backups/.lockdown}"
+
+# Use pymobiledevice3 Python API to pair and save record to a writable temp folder
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
 
 echo ""
-echo "Creating target directory on NAS..."
+echo "Pairing with iPhone (tap 'Trust' on the device if prompted)..."
+
+python3 - "$TMPDIR" <<'PYEOF'
+import sys
+import asyncio
+from pathlib import Path
+from pymobiledevice3.lockdown import create_using_usbmux
+
+output_dir = Path(sys.argv[1])
+
+async def pair():
+    import plistlib
+    lockdown = await create_using_usbmux(pairing_records_cache_folder=output_dir)
+    record_path = output_dir / f"{lockdown.udid}.plist"
+    with open(record_path, 'wb') as f:
+        plistlib.dump(lockdown.pair_record, f)
+    print(f"  ✓ Paired: {lockdown.display_name} ({lockdown.udid})")
+
+try:
+    asyncio.run(pair())
+except Exception as e:
+    print(f"  ERROR: {e}")
+    print("")
+    print("  Make sure:")
+    print("  - iPhone is plugged in via USB")
+    print("  - iPhone is unlocked")
+    print("  - You tapped 'Trust This Computer' on the iPhone")
+    sys.exit(1)
+PYEOF
+
+PLISTS=("$TMPDIR"/*.plist)
+if [[ ! -e "${PLISTS[0]}" ]]; then
+    echo "ERROR: No pairing record was created."
+    exit 1
+fi
+
+echo ""
+echo "Copying pairing record(s) to NAS..."
 ssh "$NAS_TARGET" "mkdir -p '$NAS_PATH'"
 
-echo "Copying pairing files..."
 COPIED=0
 FAILED=0
 for f in "${PLISTS[@]}"; do
     UDID=$(basename "$f" .plist)
-    if scp "$f" "${NAS_TARGET}:${NAS_PATH}/"; then
+    if scp -O "$f" "${NAS_TARGET}:${NAS_PATH}/"; then
         echo "  ✓ $UDID"
         COPIED=$((COPIED + 1))
     else

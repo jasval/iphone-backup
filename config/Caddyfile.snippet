@@ -23,7 +23,7 @@ iphone-backup.home {
 
     # Serve status JSON files (read by the dashboard)
     handle /.status* {
-        root * /volume1/iphone-backups
+        root * /volume1/ios-backups
         header Access-Control-Allow-Origin "*"
         file_server
     }

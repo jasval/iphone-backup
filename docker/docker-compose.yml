@@ -6,8 +6,8 @@ services:
     container_name: iphone-backup
     network_mode: host  # Required for mDNS/Bonjour LAN discovery; also exposes :8765
     volumes:
-      - ${BACKUP_PATH:-/volume1/iphone-backups}:/backups
-      - ${LOCKDOWN_PATH:-/volume1/iphone-backups/.lockdown}:/var/lib/lockdown
+      - ${BACKUP_PATH:-/volume1/ios-backups}:/backups
+      - ${LOCKDOWN_PATH:-/volume1/ios-backups/.lockdown}:/var/lib/lockdown
     environment:
       # Cron schedule – default 3 am daily
       - BACKUP_CRON=${BACKUP_CRON:-0 2 * * *}

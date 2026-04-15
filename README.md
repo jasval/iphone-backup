@@ -1,4 +1,4 @@
-# iPhone Backup on Synology NAS
+# iOS Backup on Synology NAS
 
 Automatic, incremental, multi-device iPhone/iPad backups running in Docker
 on a Synology NAS. Discovers devices via LAN (mDNS) and Tailscale.
@@ -16,7 +16,7 @@ iphone-backup/
 ├── scripts/
 │   ├── entrypoint.sh           – Container startup; checks lockdown dir, starts upload server
 │   ├── ibackup.sh              – Main backup script (run by cron)
-│   ├── setup.sh                – Mac-side helper: copies pairing files to NAS via SCP
+│   ├── setup.sh                – Mac-side helper: pairs iPhone via USB and copies record to NAS
 │   └── upload_server.py        – Pairing file upload server (stdlib Python, port 8765)
 ├── config/
 │   ├── Caddyfile.snippet       – Paste into your Caddyfile
@@ -35,8 +35,9 @@ iphone-backup/
 Run this from your Mac (or directly on the NAS via SSH):
 
 ```bash
-# From Apple Silicon Mac (cross-compile for NAS x86_64):
-docker buildx build --platform linux/amd64 \
+# From Apple Silicon Mac (multi-platform build):
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
   -t youruser/iphone-backup:latest \
   -f docker/Dockerfile --push .
 
@@ -56,9 +57,8 @@ cp docker/.env.example docker/.env
 Edit `docker/.env`:
 ```
 DOCKER_IMAGE=youruser/iphone-backup:latest
-BACKUP_PATH=/volume1/iphone-backups
+BACKUP_PATH=/volume1/ios-backups
 BACKUP_CRON=0 2 * * *
-IPHONE_TAILSCALE_IPS=100.x.x.x        # your iPhone's Tailscale IP
 TZ=Europe/London
 ```
 
@@ -74,36 +74,34 @@ TZ=Europe/London
 
 ### Step 4 – Pair your iPhone (ONCE per device)
 
-DSM 7 does not support USB pairing at the kernel level. Pairing works by
-copying the `.plist` file that macOS creates when you trust this Mac on your
-iPhone. Choose one of the three options below.
+DSM 7 does not support USB pairing at the kernel level. Instead, `setup.sh`
+uses the `pymobiledevice3` Python API to pair directly via USB on your Mac
+and copies the resulting pairing record to the NAS over SCP — no file system
+access to `/var/db/lockdown` required.
 
-**Option A – Run setup.sh on your Mac (recommended)**
+**Prerequisites (Mac only):**
+```bash
+pip3 install pymobiledevice3
+```
 
+**Run setup.sh with your iPhone plugged into your Mac via USB:**
 ```bash
 bash scripts/setup.sh
 ```
 
-The script finds all pairing files at `/var/db/lockdown/*.plist`, prompts for
-your NAS SSH address, and copies them over automatically.
+The script will:
+1. Pair with the connected iPhone using the pymobiledevice3 API
+2. Prompt for your NAS SSH address
+3. Copy the pairing record directly to the NAS
 
-**Option B – Upload via browser**
+Accept **"Trust This Computer"** on the iPhone if prompted.
 
-Open `http://<NAS-IP>:8765/` (or `https://iphone-backup.home/upload` if Caddy
-is configured). Drag your `.plist` files from `/var/db/lockdown/` on your Mac
-and click Upload.
+**Alternative – Upload via browser**
 
-**Option C – Manual SCP**
+If you already have a pairing `.plist` file, open `http://<NAS-IP>:8765/`
+(or `https://iphone-backup.home/upload` if Caddy is configured) and upload it.
 
-```bash
-scp /var/db/lockdown/*.plist admin@<NAS-IP>:/volume1/iphone-backups/.lockdown/
-```
-
-**Don't have a pairing file yet?** Plug your iPhone into your Mac via USB,
-tap "Trust This Computer" on the iPhone, then check `/var/db/lockdown/` — a
-new `.plist` will have appeared.
-
-After any of the above, verify and trigger a test run:
+After pairing, verify and trigger a test run:
 
 ```bash
 docker exec iphone-backup ls /var/lib/lockdown/
@@ -126,11 +124,10 @@ Dashboard available at:
 ## How It Works
 
 1. Container starts → checks `/var/lib/lockdown/` for `.plist` pairing files
-   (mounted from `/volume1/iphone-backups/.lockdown` on the NAS)
+   (mounted from `/volume1/ios-backups/.lockdown` on the NAS)
 2. Upload server starts on `:8765` (proxied by Caddy at `/upload`)
 3. Cron fires on schedule → runs `ibackup.sh`
 4. `ibackup.sh`:
-   - Opens `pymobiledevice3` tunnels for any configured Tailscale IPs
    - Enumerates all paired devices via `idevice_id -l` (mDNS/Bonjour on LAN)
    - Backs up each device with `idevicebackup2 --full` (incremental by design)
    - Writes per-device `.status/<DeviceName>.json` and `summary.json`
@@ -141,7 +138,7 @@ Dashboard available at:
 ## Backup Storage Layout
 
 ```
-/volume1/iphone-backups/
+/volume1/ios-backups/
 ├── .lockdown/               ← pairing .plist files (mounted into container)
 ├── Johns_iPhone/
 ├── Janes_iPad/
@@ -157,9 +154,8 @@ Dashboard available at:
 
 ## Restoring a Backup
 
-Restore requires a Mac with Finder (or iTunes). Run inside the container to
-identify the device UDID, then use `idevicebackup2 restore` with the iPhone
-on the same Wi-Fi network:
+Run inside the container to identify the device UDID, then restore with the
+iPhone on the same Wi-Fi network:
 
 ```bash
 docker exec -it iphone-backup bash
@@ -189,8 +185,9 @@ docker exec iphone-backup /usr/local/bin/ibackup.sh
 ## Updating the Image
 
 ```bash
-# Rebuild and push from Mac or NAS
-docker buildx build --platform linux/amd64 \
+# Rebuild and push from Mac
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
   -t youruser/iphone-backup:latest -f docker/Dockerfile --push .
 
 # In Portainer: Stack → Recreate → Pull latest image ✓
@@ -200,13 +197,16 @@ docker buildx build --platform linux/amd64 \
 
 ## Synology-Specific Notes
 
-- **No USB required**: DSM 7 lacks the `ipheth` kernel module — USB pairing
-  is impossible at the kernel level. All backups run over Wi-Fi (mDNS/Bonjour)
-  or Tailscale.
+- **No USB required for backups**: DSM 7 lacks the `ipheth` kernel module —
+  USB pairing via the NAS is impossible. `setup.sh` handles pairing from your
+  Mac over USB once; all backups then run over Wi-Fi (mDNS/Bonjour).
 - **Pairing files**: libimobiledevice reads pairing state from `/var/lib/lockdown/`
   inside the container, which is volume-mounted from
-  `/volume1/iphone-backups/.lockdown` on the NAS. Files survive container
+  `/volume1/ios-backups/.lockdown` on the NAS. Files survive container
   restarts and can be added at any time without restarting the container.
+- **macOS access restriction**: `/var/db/lockdown` is protected by macOS SIP/TCC
+  even from root. `setup.sh` works around this using the `pymobiledevice3`
+  Python API which pairs directly and saves the record to a writable location.
 - **host network mode**: Required for mDNS/Bonjour LAN discovery of iPhones.
 - **No privileged mode**: Container runs unprivileged — no USB passthrough needed.
 
@@ -216,9 +216,10 @@ docker buildx build --platform linux/amd64 \
 
 | Problem | Fix |
 |---|---|
-| Device not found | Confirm `.plist` exists in `/volume1/iphone-backups/.lockdown`; re-run `setup.sh` or re-upload |
-| "No pairing files" warning at startup | Add `.plist` via browser upload, `setup.sh`, or manual SCP |
-| Tailscale device not found | Check iPhone's Tailscale IP in `.env`, confirm both are connected |
+| `setup.sh` can't find device | Confirm iPhone is plugged in, unlocked, and `pip3 install pymobiledevice3` was run |
+| Device not found during backup | Confirm `.plist` exists in `/volume1/ios-backups/.lockdown`; re-run `setup.sh` |
+| "No pairing files" warning at startup | Run `setup.sh` or upload via browser at `:8765` |
+| scp fails during setup | Ensure SSH is enabled on the NAS (DSM → Control Panel → Terminal & SNMP) |
 | Upload page not reachable on :8765 | Confirm container is running; check `docker logs iphone-backup` for upload server PID |
 | Upload page not reachable via Caddy | Confirm Caddyfile snippet was added and `caddy reload` was run |
 | Dashboard shows no data | Run a manual backup first; check Caddyfile path |
