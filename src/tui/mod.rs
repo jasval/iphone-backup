@@ -1,10 +1,10 @@
 pub mod ui;
 
-use crate::{backup, config::Config, device, launchd, restore, status, update};
 use crate::device::Device;
 use crate::launchd::LaunchdStatus;
 use crate::restore::BackupEntry;
 use crate::status::{DeviceStatus, Summary};
+use crate::{backup, config::Config, device, launchd, restore, status, update};
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -43,8 +43,13 @@ impl Tab {
 #[derive(Debug, Clone)]
 pub enum RestoreFlow {
     SelectBackup,
-    SelectDevice { backup_idx: usize },
-    Confirm { backup_idx: usize, device_idx: usize },
+    SelectDevice {
+        backup_idx: usize,
+    },
+    Confirm {
+        backup_idx: usize,
+        device_idx: usize,
+    },
     Running,
     Done(String),
 }
@@ -252,10 +257,7 @@ pub fn run(config: Config) -> Result<()> {
 
 // ── Event loop ────────────────────────────────────────────────────────────────
 
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> Result<()> {
+fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
@@ -292,7 +294,12 @@ fn event_loop(
         }
 
         // Backup thread completion
-        if app.backup_thread.as_ref().map(|t| t.is_finished()).unwrap_or(false) {
+        if app
+            .backup_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false)
+        {
             app.backup_running = false;
             app.backup_thread = None;
             app.auto_scroll = false;
@@ -302,7 +309,12 @@ fn event_loop(
         }
 
         // Pairing thread completion
-        if app.pairing_thread.as_ref().map(|t| t.is_finished()).unwrap_or(false) {
+        if app
+            .pairing_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false)
+        {
             app.pairing_running = false;
             app.pairing_thread = None;
             app.flash = Some("Pairing finished — check log for result.".into());
@@ -311,8 +323,17 @@ fn event_loop(
         }
 
         // Update thread completion
-        if app.update_thread.as_ref().map(|t| t.is_finished()).unwrap_or(false) {
-            let ok = app.update_thread.take().and_then(|t| t.join().ok()).unwrap_or(false);
+        if app
+            .update_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false)
+        {
+            let ok = app
+                .update_thread
+                .take()
+                .and_then(|t| t.join().ok())
+                .unwrap_or(false);
             app.update_running = false;
             let msg = if ok {
                 "✓ Update complete. Restart to use the new version.".to_string()
@@ -324,7 +345,12 @@ fn event_loop(
         }
 
         // Restore thread completion
-        if app.restore_thread.as_ref().map(|t| t.is_finished()).unwrap_or(false) {
+        if app
+            .restore_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false)
+        {
             let ok = app
                 .restore_thread
                 .take()
@@ -493,15 +519,17 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
                 _ => {}
             }
         }
-        RestoreFlow::Confirm { backup_idx, device_idx } => {
+        RestoreFlow::Confirm {
+            backup_idx,
+            device_idx,
+        } => {
             let bidx = *backup_idx;
             let didx = *device_idx;
             match code {
                 KeyCode::Enter => {
-                    if let (Some(backup), Some(dev)) = (
-                        app.backups.get(bidx),
-                        app.connected_devices.get(didx),
-                    ) {
+                    if let (Some(backup), Some(dev)) =
+                        (app.backups.get(bidx), app.connected_devices.get(didx))
+                    {
                         app.restore_logs.clear();
                         app.restore_log_scroll = 0;
                         app.restore_running = true;
@@ -544,9 +572,8 @@ fn handle_services_key(app: &mut App, code: KeyCode) {
     app.services_flash = None;
     match code {
         KeyCode::Char('i') => {
-            let exe = std::env::current_exe().unwrap_or_else(|_| {
-                std::path::PathBuf::from("/usr/local/bin/iphone-backup")
-            });
+            let exe = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/iphone-backup"));
             match launchd::install(&exe, app.config.schedule_hour, app.config.schedule_minute) {
                 Ok(()) => {
                     app.services_flash = Some("launchd agent installed and loaded.".into());
@@ -571,12 +598,10 @@ fn handle_services_key(app: &mut App, code: KeyCode) {
             }
             app.refresh_services_tab();
         }
-        KeyCode::Char('s') => {
-            match launchd::start() {
-                Ok(()) => app.services_flash = Some("Backup triggered via launchd.".into()),
-                Err(e) => app.services_flash = Some(format!("Start failed: {e}")),
-            }
-        }
+        KeyCode::Char('s') => match launchd::start() {
+            Ok(()) => app.services_flash = Some("Backup triggered via launchd.".into()),
+            Err(e) => app.services_flash = Some(format!("Start failed: {e}")),
+        },
         KeyCode::Char('p') => {
             // Pair connected devices
             app.tab = Tab::Dashboard;
@@ -647,9 +672,8 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                                         ));
                                     }
                                     Err(e) => {
-                                        app.services_flash = Some(format!(
-                                            "Schedule saved but reload failed: {e}"
-                                        ));
+                                        app.services_flash =
+                                            Some(format!("Schedule saved but reload failed: {e}"));
                                     }
                                 }
                             } else {
@@ -694,22 +718,32 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Enter => {
             let new_path = app.path_input.trim().to_string();
-            if !new_path.is_empty() {
-                let expanded = if new_path.starts_with('~') {
-                    let home = dirs::home_dir().unwrap_or_default();
-                    home.join(new_path.trim_start_matches("~/"))
-                } else {
-                    std::path::PathBuf::from(&new_path)
-                };
+            if new_path.is_empty() {
+                app.services_flash = Some("Path cannot be empty.".into());
+                app.editing_path = false;
+                app.path_input.clear();
+                return;
+            }
+            let expanded = if new_path.starts_with('~') {
+                let home = dirs::home_dir().unwrap_or_default();
+                home.join(new_path.trim_start_matches("~/"))
+            } else {
+                std::path::PathBuf::from(&new_path)
+            };
+            let expanded_str = expanded.to_string_lossy();
+            if !expanded.is_absolute() {
+                app.services_flash =
+                    Some(format!("Path must be absolute (got '{}').", expanded_str));
+            } else if expanded_str.contains("..") {
+                app.services_flash = Some("Path must not contain '..' components.".into());
+            } else {
                 match std::fs::create_dir_all(&expanded) {
                     Ok(()) => {
                         app.config.backup_path = expanded.to_string_lossy().into_owned();
                         match app.config.save() {
                             Ok(()) => {
-                                app.services_flash = Some(format!(
-                                    "Backup path updated to {}",
-                                    expanded.display()
-                                ));
+                                app.services_flash =
+                                    Some(format!("Backup path updated to {}", expanded.display()));
                                 app.refresh();
                             }
                             Err(e) => {
@@ -718,10 +752,8 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
                         }
                     }
                     Err(e) => {
-                        app.services_flash = Some(format!(
-                            "Cannot create '{}': {e}",
-                            expanded.display()
-                        ));
+                        app.services_flash =
+                            Some(format!("Cannot create '{}': {e}", expanded.display()));
                     }
                 }
             }

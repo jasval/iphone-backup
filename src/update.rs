@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead as _, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
@@ -53,6 +53,23 @@ pub fn run(tx: Sender<String>) -> JoinHandle<bool> {
                     return false;
                 }
 
+                let tag_ok = stream_command(
+                    Command::new("git")
+                        .args(["verify-tag", "--raw"])
+                        .current_dir(&dir)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped()),
+                    &tx,
+                );
+                if !tag_ok {
+                    let _ = tx.send(
+                        "⚠ Tag signature could not be verified. Proceeding without verification."
+                            .into(),
+                    );
+                } else {
+                    let _ = tx.send("✓ Tag signature verified.".into());
+                }
+
                 let _ = tx.send("Building (cargo build --release)...".into());
                 let build_ok = stream_command(
                     Command::new("cargo")
@@ -71,22 +88,35 @@ pub fn run(tx: Sender<String>) -> JoinHandle<bool> {
                 let bin_dst = std::env::current_exe()
                     .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/iphone-backup"));
 
-                let _ = tx.send(format!("Installing {} → {}", bin_src.display(), bin_dst.display()));
-                let cp_ok = if bin_dst.parent().map(|p| is_writable(p)).unwrap_or(false) {
+                let _ = tx.send(format!(
+                    "Installing {} → {}",
+                    bin_src.display(),
+                    bin_dst.display()
+                ));
+                let cp_ok = if bin_dst.parent().map(is_writable).unwrap_or(false) {
                     std::fs::copy(&bin_src, &bin_dst).is_ok()
                 } else {
                     Command::new("sudo")
-                        .args(["cp", bin_src.to_str().unwrap_or(""), bin_dst.to_str().unwrap_or("")])
+                        .args([
+                            "cp",
+                            bin_src.to_str().unwrap_or(""),
+                            bin_dst.to_str().unwrap_or(""),
+                        ])
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false)
                 };
 
                 if cp_ok {
-                    let _ = tx.send("✓ Update complete. Restart iphone-backup to use the new version.".into());
+                    let _ = tx.send(
+                        "✓ Update complete. Restart iphone-backup to use the new version.".into(),
+                    );
                     true
                 } else {
-                    let _ = tx.send("✗ Copy failed — try: sudo cp target/release/iphone-backup /usr/local/bin/".into());
+                    let _ = tx.send(
+                        "✗ Copy failed — try: sudo cp target/release/iphone-backup /usr/local/bin/"
+                            .into(),
+                    );
                     false
                 }
             } else {
@@ -110,20 +140,21 @@ fn stream_command(cmd: &mut Command, tx: &Sender<String>) -> bool {
     };
 
     let tx2 = tx.clone();
-    let stderr = child.stderr.take().unwrap();
-    let stderr_thread = std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().flatten() {
-            let _ = tx2.send(line);
-        }
-    });
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_thread = std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let _ = tx2.send(line);
+            }
+        });
+        let _ = stderr_thread.join();
+    }
 
     if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().flatten() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = tx.send(line);
         }
     }
 
-    let _ = stderr_thread.join();
     child.wait().map(|s| s.success()).unwrap_or(false)
 }
 

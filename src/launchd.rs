@@ -61,7 +61,11 @@ pub fn status() -> LaunchdStatus {
     } else {
         false
     };
-    LaunchdStatus { installed, loaded, plist_path: path }
+    LaunchdStatus {
+        installed,
+        loaded,
+        plist_path: path,
+    }
 }
 
 /// Write the plist (using the current executable path) and load it.
@@ -142,4 +146,80 @@ pub fn start() -> Result<()> {
         anyhow::bail!("launchctl start: {}", msg);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_plist(binary_path: &str, hour: u8, minute: u8) -> String {
+        PLIST_TEMPLATE
+            .replace("BINARY_PATH", binary_path)
+            .replace("SCHED_HOUR", &hour.to_string())
+            .replace("SCHED_MINUTE", &minute.to_string())
+    }
+
+    #[test]
+    fn plist_contains_label() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
+        assert!(xml.contains("<string>com.user.iphone-backup</string>"));
+    }
+
+    #[test]
+    fn plist_contains_binary_path() {
+        let xml = render_plist("/opt/homebrew/bin/iphone-backup", 2, 0);
+        assert!(xml.contains("<string>/opt/homebrew/bin/iphone-backup</string>"));
+        assert!(xml.contains("<string>backup</string>"));
+    }
+
+    #[test]
+    fn plist_contains_schedule() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 14, 30);
+        assert!(xml.contains("<integer>14</integer>"));
+        assert!(xml.contains("<integer>30</integer>"));
+    }
+
+    #[test]
+    fn plist_contains_midnight_schedule() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 0, 0);
+        assert!(xml.contains("<integer>0</integer>"));
+    }
+
+    #[test]
+    fn plist_no_unreplaced_placeholders() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
+        assert!(!xml.contains("BINARY_PATH"));
+        assert!(!xml.contains("SCHED_HOUR"));
+        assert!(!xml.contains("SCHED_MINUTE"));
+    }
+
+    #[test]
+    fn plist_is_valid_xml() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
+        assert!(xml.contains("<?xml"));
+        assert!(xml.contains("<plist"));
+        assert!(xml.contains("</plist>"));
+        assert!(xml.contains("<dict>"));
+        assert!(xml.contains("</dict>"));
+    }
+
+    #[test]
+    fn plist_has_log_paths() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
+        assert!(xml.contains("/tmp/iphone-backup-launchd.log"));
+    }
+
+    #[test]
+    fn plist_run_at_load_false() {
+        let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
+        assert!(xml.contains("<false/>"));
+    }
+
+    #[test]
+    fn plist_path_is_under_home_library() {
+        let path = plist_path();
+        let s = path.to_string_lossy();
+        assert!(s.contains("Library/LaunchAgents"));
+        assert!(s.ends_with("com.user.iphone-backup.plist"));
+    }
 }
