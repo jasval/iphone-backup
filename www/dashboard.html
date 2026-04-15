@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iPhone Backup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root,[data-theme="light"]{
+    --bg:#f5f4f0;--surface:#faf9f6;--surface-2:#ffffff;--surface-offset:#edeae5;
+    --border:rgba(0,0,0,0.09);--divider:#dcd9d5;
+    --text:#1a1916;--muted:#7a7974;--faint:#bab9b4;
+    --primary:#01696f;--primary-h:#0c4e54;--primary-hl:#d2dedd;
+    --success:#437a22;--success-hl:#d4dfcc;
+    --error:#a12c7b;--error-hl:#e0ced7;
+    --warn:#964219;--warn-hl:#ddcfc6;
+    --shadow:0 1px 3px rgba(0,0,0,.07),0 4px 12px rgba(0,0,0,.05);
+    --radius:8px;--radius-lg:12px;
+    --font:'Geist',system-ui,sans-serif;--mono:'Geist Mono',monospace;
+  }
+  [data-theme="dark"]{
+    --bg:#111110;--surface:#191817;--surface-2:#1f1e1c;--surface-offset:#161514;
+    --border:rgba(255,255,255,0.07);--divider:#2a2927;
+    --text:#d4d3d0;--muted:#797876;--faint:#4a4947;
+    --primary:#4f98a3;--primary-h:#227f8b;--primary-hl:#1e3436;
+    --success:#6daa45;--success-hl:#243318;
+    --error:#d163a7;--error-hl:#3a1e30;
+    --warn:#bb653b;--warn-hl:#3d2015;
+    --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.25);
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;scroll-behavior:smooth}
+  body{font-family:var(--font);font-size:14px;line-height:1.6;color:var(--text);background:var(--bg);min-height:100dvh}
+  .topbar{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--divider);padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between}
+  .topbar-left{display:flex;align-items:center;gap:10px}
+  .logo{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;color:var(--text)}
+  .logo svg{color:var(--primary)}
+  .badge{font-size:11px;padding:2px 8px;border-radius:99px;font-weight:500;letter-spacing:.02em}
+  .badge-ok{background:var(--success-hl);color:var(--success)}
+  .badge-error{background:var(--error-hl);color:var(--error)}
+  .badge-warn{background:var(--warn-hl);color:var(--warn)}
+  .badge-idle{background:var(--surface-offset);color:var(--muted)}
+  .topbar-right{display:flex;align-items:center;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--surface-2);color:var(--text);transition:all .15s ease}
+  .btn:hover{background:var(--surface-offset)}
+  .theme-toggle{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--border);background:var(--surface-2);color:var(--muted);transition:all .15s ease}
+  .theme-toggle:hover{color:var(--text);background:var(--surface-offset)}
+  .main{max-width:960px;margin:0 auto;padding:32px 24px}
+  .section-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px}
+  .kpi-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:32px}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;display:flex;flex-direction:column;gap:4px}
+  .kpi-label{font-size:11px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em}
+  .kpi-value{font-size:24px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.2}
+  .kpi-sub{font-size:11px;color:var(--faint);font-family:var(--mono)}
+  .devices-grid{display:grid;gap:12px;margin-bottom:32px}
+  .device-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:start;transition:box-shadow .15s ease}
+  .device-card:hover{box-shadow:var(--shadow)}
+  .device-icon{width:40px;height:40px;border-radius:10px;background:var(--surface-offset);display:flex;align-items:center;justify-content:center;color:var(--muted);flex-shrink:0}
+  .device-name{font-weight:600;font-size:15px;color:var(--text);margin-bottom:2px}
+  .device-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .device-meta span{font-size:11px;color:var(--muted);font-family:var(--mono)}
+  .device-status{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  .device-time{font-size:11px;color:var(--faint);font-family:var(--mono);text-align:right}
+  .device-size{font-size:12px;color:var(--muted);font-family:var(--mono)}
+  .log-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+  .log-header{padding:12px 16px;border-bottom:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between}
+  .log-header span{font-size:12px;font-weight:500;color:var(--muted)}
+  .log-body{font-family:var(--mono);font-size:12px;line-height:1.7;padding:16px;overflow-y:auto;max-height:320px;color:var(--muted);white-space:pre-wrap;word-break:break-all}
+  .log-body .log-ok{color:var(--success)}
+  .log-body .log-err{color:var(--error)}
+  .log-body .log-ts{color:var(--faint)}
+  .empty{padding:48px 24px;text-align:center;color:var(--muted)}
+  .empty svg{margin:0 auto 12px;color:var(--faint);display:block}
+  .loading-bar{height:2px;background:var(--primary);width:0;transition:width .4s ease;position:fixed;top:0;left:0;z-index:100}
+  .refresh-info{font-size:11px;color:var(--faint);font-family:var(--mono);margin-left:8px}
+  @media(max-width:600px){.device-card{grid-template-columns:auto 1fr}.device-status{grid-column:1/-1}.kpi-row{grid-template-columns:repeat(2,1fr)}.main{padding:20px 16px}}
+</style>
+</head>
+<body>
+<div class="loading-bar" id="loadingBar"></div>
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="2" width="14" height="20" rx="3"/><circle cx="12" cy="18" r="1"/><line x1="9" y1="6" x2="15" y2="6"/></svg>
+      iPhone Backup
+    </div>
+    <span class="badge badge-idle" id="summaryBadge">Loading…</span>
+    <span class="refresh-info" id="refreshInfo"></span>
+  </div>
+  <div class="topbar-right">
+    <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+    <button class="btn" onclick="refresh()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+      Refresh
+    </button>
+  </div>
+</header>
+<main class="main">
+  <div class="kpi-row">
+    <div class="kpi"><div class="kpi-label">Devices</div><div class="kpi-value" id="kpiDevices">–</div></div>
+    <div class="kpi"><div class="kpi-label">Last run</div><div class="kpi-value" id="kpiLastRun" style="font-size:16px">–</div><div class="kpi-sub" id="kpiLastRunSub"></div></div>
+    <div class="kpi"><div class="kpi-label">Status</div><div class="kpi-value" id="kpiStatus">–</div></div>
+    <div class="kpi"><div class="kpi-label">Failed</div><div class="kpi-value" id="kpiFailed">–</div></div>
+  </div>
+  <div class="section-title">Devices</div>
+  <div class="devices-grid" id="devicesGrid">
+    <div class="empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="3"/><circle cx="12" cy="18" r="1"/></svg>Loading device data…</div>
+  </div>
+  <div class="section-title">Recent Log</div>
+  <div class="log-panel">
+    <div class="log-header"><span>ibackup.log</span><button class="btn" style="font-size:11px;padding:4px 8px" onclick="loadLog()">Reload</button></div>
+    <div class="log-body" id="logBody">Loading log…</div>
+  </div>
+</main>
+<script>
+(function(){const html=document.documentElement,btn=document.getElementById('themeToggle');let t=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';html.setAttribute('data-theme',t);function si(t){btn.innerHTML=t==='dark'?'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>':'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';}si(t);btn.addEventListener('click',()=>{t=t==='dark'?'light':'dark';html.setAttribute('data-theme',t);si(t);});})();
+const STATUS_BASE='/.status';
+function fmtDate(iso){if(!iso)return'—';const d=new Date(iso),now=new Date(),diff=Math.floor((now-d)/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+function sc(s){if(s==='success'||s==='ok')return'badge-ok';if(s==='failed')return'badge-error';if(s==='partial_failure')return'badge-warn';return'badge-idle';}
+async function fj(url){try{const r=await fetch(url+'?t='+Date.now());if(!r.ok)return null;return await r.json();}catch{return null;}}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+async function refresh(){
+  const bar=document.getElementById('loadingBar');bar.style.width='40%';
+  const summary=await fj(`${STATUS_BASE}/summary.json`);bar.style.width='60%';
+  if(summary){
+    document.getElementById('kpiDevices').textContent=summary.total_devices??'0';
+    document.getElementById('kpiLastRun').textContent=fmtDate(summary.last_run);
+    document.getElementById('kpiLastRunSub').textContent=summary.last_run?new Date(summary.last_run).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+    document.getElementById('kpiStatus').textContent=summary.status??'—';
+    document.getElementById('kpiFailed').textContent=summary.failed??'—';
+    const b=document.getElementById('summaryBadge');b.textContent=summary.status??'unknown';b.className='badge '+sc(summary.status);
+  }else{document.getElementById('summaryBadge').textContent='No data';document.getElementById('summaryBadge').className='badge badge-idle';}
+  let deviceFiles=[];
+  const manifest=await fj(`${STATUS_BASE}/manifest.json`);
+  if(manifest&&manifest.devices)deviceFiles=manifest.devices.map(n=>({name:n+'.json'}));
+  bar.style.width='80%';
+  const devices=await Promise.all(deviceFiles.map(f=>fj(`${STATUS_BASE}/${f.name}`)));
+  renderDevices(devices.filter(Boolean));
+  document.getElementById('refreshInfo').textContent='Updated '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  bar.style.width='100%';setTimeout(()=>bar.style.width='0',600);
+  loadLog();
+}
+function renderDevices(devices){
+  const grid=document.getElementById('devicesGrid');
+  if(!devices.length){grid.innerHTML='<div class="empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="3"/><circle cx="12" cy="18" r="1"/></svg>No devices found. Run a backup first.</div>';return;}
+  grid.innerHTML=devices.map(d=>`<div class="device-card"><div class="device-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="2" width="14" height="20" rx="3"/><circle cx="12" cy="18" r="1"/><line x1="9" y1="6" x2="15" y2="6"/></svg></div><div><div class="device-name">${esc(d.name||d.udid)}</div><div class="device-meta"><span>${esc(d.model||'')}</span><span>iOS ${esc(d.ios||'?')}</span><span title="${esc(d.udid||'')}">${(d.udid||'').slice(0,8)}…</span></div></div><div class="device-status"><span class="badge ${sc(d.status)}">${esc(d.status||'unknown')}</span><span class="device-time">${fmtDate(d.last_run)}</span>${d.size?`<span class="device-size">${esc(d.size)}</span>`:''} ${d.elapsed_sec?`<span class="device-size">${d.elapsed_sec}s</span>`:''}</div></div>`).join('');
+}
+async function loadLog(){
+  const el=document.getElementById('logBody');
+  try{const r=await fetch(`${STATUS_BASE}/ibackup.log?t=`+Date.now());if(!r.ok){el.textContent='Log not found.';return;}
+  const txt=await r.text();const lines=txt.trim().split('\n').slice(-80);
+  el.innerHTML=lines.map(l=>{const s=esc(l);if(l.includes('ERROR')||l.includes('failed'))return`<span class="log-err">${s}</span>`;if(l.includes('✓')||l.includes('complete'))return`<span class="log-ok">${s}</span>`;const m=s.match(/^(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\])(.*)/);if(m)return`<span class="log-ts">${m[1]}</span>${m[2]}`;return s;}).join('\n');
+  el.scrollTop=el.scrollHeight;}catch{el.textContent='Could not load log.';}
+}
+refresh();setInterval(refresh,60000);
+</script>
+</body>
+</html>
