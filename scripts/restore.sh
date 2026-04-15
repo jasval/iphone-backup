@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restore.sh – Restore an iPhone/iPad backup from the NAS to a device.
+# restore.sh – Restore an iPhone/iPad backup to a device.
 # Run on your Mac: bash scripts/restore.sh
 #
 # Prerequisites: brew install libimobiledevice
@@ -7,7 +7,13 @@
 
 set -uo pipefail
 
-NAS_MOUNT="${NAS_MOUNT:-/Volumes/ios-backups}"
+# Read backup_path from config file
+CONFIG_FILE="$HOME/.config/iphone-backup/config.toml"
+if [[ -f "$CONFIG_FILE" ]]; then
+    BACKUP_PATH=$(grep 'backup_path' "$CONFIG_FILE" | sed 's/.*= *"\(.*\)"/\1/')
+else
+    BACKUP_PATH="$HOME/Backups/iOS"
+fi
 
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -21,29 +27,27 @@ if ! command -v idevicebackup2 &>/dev/null; then
     exit 1
 fi
 
-# ── Check NAS is mounted ──────────────────────────────────────────────────────
-if ! ls "$NAS_MOUNT" &>/dev/null 2>&1; then
-    echo "ERROR: NAS not mounted at $NAS_MOUNT"
-    echo "  Mount the NAS share in Finder first, or set NAS_MOUNT=/Volumes/your-share"
+# ── Check backup path exists ──────────────────────────────────────────────────
+if ! ls "$BACKUP_PATH" &>/dev/null 2>&1; then
+    echo "ERROR: Backup path not accessible: $BACKUP_PATH"
+    echo "  Check your config: $CONFIG_FILE"
     exit 1
 fi
 
 # ── List available backups ────────────────────────────────────────────────────
-echo "Available backups on NAS:"
+echo "Available backups in $BACKUP_PATH:"
 echo ""
 
 BACKUPS=()
 i=1
-for dir in "$NAS_MOUNT"/*/; do
+for dir in "$BACKUP_PATH"/*/; do
     name=$(basename "$dir")
-    # Skip hidden dirs like .lockdown, .status
     [[ "$name" == .* ]] && continue
-    # Must contain a backup manifest
-    if ls "$dir"/*.mdbackup &>/dev/null 2>&1 || ls "$dir"/*.mdinfo &>/dev/null 2>&1 || \
-       ls "$dir"/Manifest.plist &>/dev/null 2>&1 || ls "$dir"/Manifest.mbdb &>/dev/null 2>&1; then
+    if ls "$dir"/Manifest.plist &>/dev/null 2>&1 || \
+       ls "$dir"/*.mdbackup   &>/dev/null 2>&1 || \
+       ls "$dir"/Manifest.mbdb &>/dev/null 2>&1; then
         SIZE=$(du -sh "$dir" 2>/dev/null | cut -f1 || echo "?")
-        # Try to read last backup time from status JSON
-        STATUS_FILE="$NAS_MOUNT/.status/${name}.json"
+        STATUS_FILE="$BACKUP_PATH/.status/${name}.json"
         LAST_RUN="unknown"
         IOS_VER=""
         if [[ -f "$STATUS_FILE" ]]; then
@@ -59,8 +63,8 @@ for dir in "$NAS_MOUNT"/*/; do
 done
 
 if [[ ${#BACKUPS[@]} -eq 0 ]]; then
-    echo "  No backups found at $NAS_MOUNT"
-    echo "  Run a backup first: launchctl start com.user.iphone-backup"
+    echo "  No backups found in $BACKUP_PATH"
+    echo "  Run a backup first: iphone-backup backup"
     exit 1
 fi
 
@@ -77,23 +81,19 @@ echo "Selected: $BACKUP_NAME"
 
 # ── Detect connected device ───────────────────────────────────────────────────
 echo ""
-echo "Detecting devices..."
-echo "  Make sure the iPhone is connected via USB or on the same Wi-Fi."
-echo "  If prompted on the device, tap 'Trust This Computer'."
+echo "Detecting devices (plug in via USB or ensure Wi-Fi sync is on)..."
 echo ""
 
 UDIDS=$(idevice_id -l 2>/dev/null || true)
 
 if [[ -z "$UDIDS" ]]; then
     echo "ERROR: No devices found."
-    echo "  - Plug iPhone in via USB, or enable Wi-Fi sync"
-    echo "  - Unlock the device"
+    echo "  - Plug iPhone in via USB and unlock it"
+    echo "  - Or enable Wi-Fi sync: Settings → General → VPN & Device Management → Connect via Wi-Fi"
     exit 1
 fi
 
-# If multiple devices, let user pick
 DEVICE_COUNT=$(echo "$UDIDS" | wc -l | tr -d ' ')
-TARGET_UDID=""
 
 if [[ "$DEVICE_COUNT" -eq 1 ]]; then
     TARGET_UDID="$UDIDS"
@@ -119,10 +119,10 @@ fi
 # ── Restore options ───────────────────────────────────────────────────────────
 echo ""
 echo "Restore options:"
-echo "  [1] Standard restore (apps + data, recommended for same device)"
-echo "  [2] Full restore including system settings (same device, same iOS version)"
+echo "  [1] Standard  – apps + data (recommended)"
+echo "  [2] Full      – includes system settings (same device, same iOS version only)"
 echo ""
-read -rp "Select restore type [1-2, default 1]: " RESTORE_TYPE
+read -rp "Select [1-2, default 1]: " RESTORE_TYPE
 RESTORE_TYPE="${RESTORE_TYPE:-1}"
 
 echo ""
@@ -141,22 +141,15 @@ fi
 
 # ── Run restore ───────────────────────────────────────────────────────────────
 echo ""
-echo "Starting restore from $BACKUP_DIR ..."
-echo "  Keep the device connected and unlocked throughout."
+echo "Restoring from $BACKUP_DIR ..."
+echo "Keep the device connected and unlocked throughout."
 echo ""
 
-case "$RESTORE_TYPE" in
-    2)
-        idevicebackup2 -u "$TARGET_UDID" restore \
-            --system --settings --interactive \
-            "$BACKUP_DIR"
-        ;;
-    *)
-        idevicebackup2 -u "$TARGET_UDID" restore \
-            --interactive \
-            "$BACKUP_DIR"
-        ;;
-esac
+if [[ "$RESTORE_TYPE" == "2" ]]; then
+    idevicebackup2 -u "$TARGET_UDID" restore --system --settings --interactive "$BACKUP_DIR"
+else
+    idevicebackup2 -u "$TARGET_UDID" restore --interactive "$BACKUP_DIR"
+fi
 
 echo ""
 echo "Restore complete. The device will restart."

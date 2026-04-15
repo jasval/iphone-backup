@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Where backups are stored. Can be a local path or an SMB mount point.
+    /// Where backups are stored (e.g. ~/Backups/iOS or /Volumes/my-drive).
     pub backup_path: String,
 }
 

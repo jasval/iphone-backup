@@ -1,6 +1,6 @@
 # iphone-backup
 
-Automated, incremental iPhone/iPad backups on macOS — native Rust binary with a Ratatui TUI dashboard, scheduled via launchd. No Docker, no NAS required (though any SMB mount works as the backup destination).
+Automated, incremental iPhone/iPad backups on macOS — native Rust binary with a Ratatui TUI dashboard, scheduled via launchd.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ sudo cp target/release/iphone-backup /usr/local/bin/
 ```bash
 mkdir -p ~/.config/iphone-backup
 cat > ~/.config/iphone-backup/config.toml <<EOF
-backup_path = "/Volumes/ios-backups"   # or ~/Backups/iOS for local storage
+backup_path = "~/Backups/iOS"
 EOF
 ```
 
