@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iPhone Backup – Upload Pairing File</title>
+<style>
+  :root,[data-theme="light"]{
+    --bg:#f5f4f0;--surface:#faf9f6;--surface-2:#ffffff;--surface-offset:#edeae5;
+    --border:rgba(0,0,0,0.09);--divider:#dcd9d5;
+    --text:#1a1916;--muted:#7a7974;--faint:#bab9b4;
+    --primary:#01696f;--primary-h:#0c4e54;--primary-hl:#d2dedd;
+    --success:#437a22;--success-hl:#d4dfcc;
+    --error:#a12c7b;--error-hl:#e0ced7;
+    --shadow:0 1px 3px rgba(0,0,0,.07),0 4px 12px rgba(0,0,0,.05);
+    --radius:8px;--radius-lg:12px;
+    --font:system-ui,-apple-system,sans-serif;--mono:ui-monospace,monospace;
+  }
+  [data-theme="dark"]{
+    --bg:#111110;--surface:#191817;--surface-2:#1f1e1c;--surface-offset:#161514;
+    --border:rgba(255,255,255,0.07);--divider:#2a2927;
+    --text:#d4d3d0;--muted:#797876;--faint:#4a4947;
+    --primary:#4f98a3;--primary-h:#227f8b;--primary-hl:#1e3436;
+    --success:#6daa45;--success-hl:#243318;
+    --error:#d163a7;--error-hl:#3a1e30;
+    --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.25);
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased}
+  body{font-family:var(--font);font-size:14px;line-height:1.6;color:var(--text);background:var(--bg);min-height:100dvh}
+  .topbar{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--divider);padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between}
+  .topbar-left{display:flex;align-items:center;gap:10px}
+  .logo{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;color:var(--text)}
+  .logo svg{color:var(--primary)}
+  .topbar-right{display:flex;align-items:center;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--surface-2);color:var(--text);text-decoration:none;transition:all .15s ease}
+  .btn:hover{background:var(--surface-offset)}
+  .btn-primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn-primary:hover{background:var(--primary-h);border-color:var(--primary-h)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .theme-toggle{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--border);background:var(--surface-2);color:var(--muted);transition:all .15s ease}
+  .theme-toggle:hover{color:var(--text);background:var(--surface-offset)}
+  .main{max-width:600px;margin:0 auto;padding:40px 24px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;margin-bottom:20px}
+  h1{font-size:18px;font-weight:600;margin-bottom:6px}
+  .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .instructions{background:var(--surface-offset);border-radius:var(--radius);padding:14px 16px;margin-bottom:20px;font-size:13px;line-height:1.8}
+  .instructions strong{display:block;margin-bottom:2px}
+  .instructions code{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);padding:1px 5px;border-radius:4px}
+  .drop-zone{border:2px dashed var(--border);border-radius:var(--radius-lg);padding:40px 24px;text-align:center;cursor:pointer;transition:all .2s ease;margin-bottom:16px;user-select:none}
+  .drop-zone:hover,.drop-zone.drag-over{border-color:var(--primary);background:var(--primary-hl)}
+  .drop-zone svg{color:var(--faint);margin-bottom:10px}
+  .drop-zone p{color:var(--muted);font-size:13px;margin-top:4px}
+  .drop-zone strong{color:var(--text)}
+  .browse-link{color:var(--primary);text-decoration:underline;cursor:pointer}
+  #fileInput{display:none}
+  .file-list{margin-bottom:16px}
+  .file-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;font-size:13px}
+  .file-item-name{flex:1;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .file-status{font-size:11px;font-weight:500;padding:2px 7px;border-radius:99px;white-space:nowrap}
+  .status-pending{background:var(--surface-offset);color:var(--muted)}
+  .status-ok{background:var(--success-hl);color:var(--success)}
+  .status-error{background:var(--error-hl);color:var(--error)}
+  .result-banner{padding:12px 16px;border-radius:var(--radius);font-size:13px;margin-bottom:16px;display:none}
+  .result-banner.ok{background:var(--success-hl);color:var(--success)}
+  .result-banner.error{background:var(--error-hl);color:var(--error)}
+  .actions{display:flex;gap:8px;justify-content:flex-end}
+  @media(max-width:500px){.main{padding:24px 16px}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="2" width="14" height="20" rx="3"/><circle cx="12" cy="18" r="1"/><line x1="9" y1="6" x2="15" y2="6"/></svg>
+      iPhone Backup
+    </div>
+  </div>
+  <div class="topbar-right">
+    <a class="btn" href="/dashboard/dashboard.html">Dashboard</a>
+    <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="main">
+  <div class="card">
+    <h1>Upload Pairing File</h1>
+    <p class="subtitle">Add iOS pairing credentials so this container can back up your device over Wi-Fi or Tailscale.</p>
+
+    <div class="instructions">
+      <strong>How to get your pairing file on macOS:</strong>
+      Open Terminal and run <code>ls /var/db/lockdown/</code> — each <code>.plist</code> file is one paired device.<br>
+      In Finder: Go → Go to Folder → <code>/var/db/lockdown/</code><br>
+      Drag the <code>&lt;UDID&gt;.plist</code> file here, or use <code>bash scripts/setup.sh</code> to copy automatically via SCP.
+    </div>
+
+    <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Drop .plist files to upload">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p><strong>Drop .plist files here</strong></p>
+      <p>or <span class="browse-link" id="browseLink">browse to select</span></p>
+    </div>
+    <input type="file" id="fileInput" accept=".plist" multiple>
+
+    <div class="file-list" id="fileList"></div>
+    <div class="result-banner" id="resultBanner"></div>
+
+    <div class="actions">
+      <button class="btn" id="clearBtn" style="display:none" onclick="clearFiles()">Clear</button>
+      <button class="btn btn-primary" id="uploadBtn" style="display:none" onclick="doUpload()">Upload Files</button>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  const html = document.documentElement;
+  const btn = document.getElementById('themeToggle');
+  let theme = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
+  html.setAttribute('data-theme', theme);
+
+  function setIcon(t) {
+    btn.innerHTML = t === 'dark'
+      ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
+      : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  }
+  setIcon(theme);
+  btn.addEventListener('click', () => {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', theme);
+    setIcon(theme);
+  });
+})();
+
+let selectedFiles = [];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function renderFileList() {
+  const list = document.getElementById('fileList');
+  list.innerHTML = selectedFiles.map((f, i) => `
+    <div class="file-item" id="file-item-${i}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span class="file-item-name">${esc(f.name)}</span>
+      <span class="file-status status-pending" id="file-status-${i}">Pending</span>
+    </div>`).join('');
+  const show = selectedFiles.length > 0;
+  document.getElementById('uploadBtn').style.display = show ? '' : 'none';
+  document.getElementById('clearBtn').style.display = show ? '' : 'none';
+}
+
+function addFiles(fileList) {
+  const existing = new Set(selectedFiles.map(f => f.name));
+  for (const f of fileList) {
+    if (!f.name.toLowerCase().endsWith('.plist')) {
+      alert(`"${f.name}" is not a .plist file — skipped.`);
+      continue;
+    }
+    if (!existing.has(f.name)) {
+      selectedFiles.push(f);
+      existing.add(f.name);
+    }
+  }
+  renderFileList();
+  document.getElementById('resultBanner').style.display = 'none';
+}
+
+function clearFiles() {
+  selectedFiles = [];
+  renderFileList();
+}
+
+document.getElementById('fileInput').addEventListener('change', e => addFiles(e.target.files));
+document.getElementById('browseLink').addEventListener('click', () => document.getElementById('fileInput').click());
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('click', e => { if (e.target.id !== 'browseLink') document.getElementById('fileInput').click(); });
+dz.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') document.getElementById('fileInput').click(); });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+
+async function doUpload() {
+  if (!selectedFiles.length) return;
+  const uploadBtn = document.getElementById('uploadBtn');
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = 'Uploading…';
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < selectedFiles.length; i++) {
+    const f = selectedFiles[i];
+    const statusEl = document.getElementById(`file-status-${i}`);
+    statusEl.className = 'file-status status-pending';
+    statusEl.textContent = 'Uploading…';
+
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        statusEl.className = 'file-status status-ok';
+        statusEl.textContent = 'Saved';
+        ok++;
+      } else {
+        statusEl.className = 'file-status status-error';
+        statusEl.textContent = j.error || 'Failed';
+        fail++;
+      }
+    } catch (e) {
+      statusEl.className = 'file-status status-error';
+      statusEl.textContent = 'Network error';
+      fail++;
+    }
+  }
+
+  const banner = document.getElementById('resultBanner');
+  if (fail === 0) {
+    banner.className = 'result-banner ok';
+    banner.textContent = `${ok} file${ok !== 1 ? 's' : ''} uploaded. Devices will be discoverable on the next backup run.`;
+  } else {
+    banner.className = 'result-banner error';
+    banner.textContent = `${ok} uploaded, ${fail} failed. See individual file status above.`;
+  }
+  banner.style.display = 'block';
+  uploadBtn.disabled = false;
+  uploadBtn.textContent = 'Upload Files';
+}
+</script>
+</body>
+</html>

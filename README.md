@@ -14,14 +14,16 @@ iphone-backup/
 │   ├── docker-compose.yml      – Portainer/Compose stack definition
 │   └── .env.example            – Copy to .env and fill in
 ├── scripts/
-│   ├── entrypoint.sh           – Container startup (uses Synology host usbmuxd)
+│   ├── entrypoint.sh           – Container startup; checks lockdown dir, starts upload server
 │   ├── ibackup.sh              – Main backup script (run by cron)
-│   └── setup.sh                – First-time USB pairing (run once)
+│   ├── setup.sh                – Mac-side helper: copies pairing files to NAS via SCP
+│   └── upload_server.py        – Pairing file upload server (stdlib Python, port 8765)
 ├── config/
 │   ├── Caddyfile.snippet       – Paste into your Caddyfile
 │   └── adguard-dns-rewrite.md
 └── www/
-    └── dashboard.html          – Status dashboard (light/dark, auto-refresh)
+    ├── dashboard.html          – Status dashboard (light/dark, auto-refresh)
+    └── upload.html             – Pairing file upload page (served from container)
 ```
 
 ---
@@ -70,16 +72,43 @@ TZ=Europe/London
 > Portainer does not support `build:` in compose files — this stack uses
 > `image:` so it pulls directly from Docker Hub. ✓
 
-### Step 4 – First-time USB pairing (ONCE ONLY)
+### Step 4 – Pair your iPhone (ONCE per device)
 
-Plug your iPhone into the NAS via USB, unlock it, then:
+DSM 7 does not support USB pairing at the kernel level. Pairing works by
+copying the `.plist` file that macOS creates when you trust this Mac on your
+iPhone. Choose one of the three options below.
+
+**Option A – Run setup.sh on your Mac (recommended)**
 
 ```bash
-docker exec -it iphone-backup /usr/local/bin/setup.sh
+bash scripts/setup.sh
 ```
 
-Follow the prompts. Accept **"Trust This Computer"** on each iPhone.
-Unplug the cable — all future backups run wirelessly.
+The script finds all pairing files at `/var/db/lockdown/*.plist`, prompts for
+your NAS SSH address, and copies them over automatically.
+
+**Option B – Upload via browser**
+
+Open `http://<NAS-IP>:8765/` (or `https://iphone-backup.home/upload` if Caddy
+is configured). Drag your `.plist` files from `/var/db/lockdown/` on your Mac
+and click Upload.
+
+**Option C – Manual SCP**
+
+```bash
+scp /var/db/lockdown/*.plist admin@<NAS-IP>:/volume1/iphone-backups/.lockdown/
+```
+
+**Don't have a pairing file yet?** Plug your iPhone into your Mac via USB,
+tap "Trust This Computer" on the iPhone, then check `/var/db/lockdown/` — a
+new `.plist` will have appeared.
+
+After any of the above, verify and trigger a test run:
+
+```bash
+docker exec iphone-backup ls /var/lib/lockdown/
+docker exec iphone-backup /usr/local/bin/ibackup.sh
+```
 
 ### Step 5 – Dashboard (optional)
 
@@ -89,20 +118,23 @@ Unplug the cable — all future backups run wirelessly.
 
 Dashboard available at:
 - **LAN:** https://iphone-backup.home/dashboard/dashboard.html
+- **Upload page:** https://iphone-backup.home/upload
 - **Tailscale:** https://&lt;nas-hostname&gt;.&lt;tailnet&gt;.ts.net/dashboard/dashboard.html
 
 ---
 
 ## How It Works
 
-1. Container starts → verifies Synology's host `usbmuxd` socket at `/var/run/usbmuxd`
-2. Cron fires on schedule → runs `ibackup.sh`
-3. `ibackup.sh`:
+1. Container starts → checks `/var/lib/lockdown/` for `.plist` pairing files
+   (mounted from `/volume1/iphone-backups/.lockdown` on the NAS)
+2. Upload server starts on `:8765` (proxied by Caddy at `/upload`)
+3. Cron fires on schedule → runs `ibackup.sh`
+4. `ibackup.sh`:
    - Opens `pymobiledevice3` tunnels for any configured Tailscale IPs
-   - Enumerates all paired devices via `idevice_id -l`
+   - Enumerates all paired devices via `idevice_id -l` (mDNS/Bonjour on LAN)
    - Backs up each device with `idevicebackup2 --full` (incremental by design)
    - Writes per-device `.status/<DeviceName>.json` and `summary.json`
-4. Caddy serves the status files; dashboard polls every 60s
+5. Caddy serves the status files; dashboard polls every 60s
 
 ---
 
@@ -110,6 +142,7 @@ Dashboard available at:
 
 ```
 /volume1/iphone-backups/
+├── .lockdown/               ← pairing .plist files (mounted into container)
 ├── Johns_iPhone/
 ├── Janes_iPad/
 └── .status/
@@ -124,7 +157,9 @@ Dashboard available at:
 
 ## Restoring a Backup
 
-USB connection required for restore. Run inside the container:
+Restore requires a Mac with Finder (or iTunes). Run inside the container to
+identify the device UDID, then use `idevicebackup2 restore` with the iPhone
+on the same Wi-Fi network:
 
 ```bash
 docker exec -it iphone-backup bash
@@ -165,11 +200,15 @@ docker buildx build --platform linux/amd64 \
 
 ## Synology-Specific Notes
 
-- **usbmuxd**: DSM runs its own instance. The container uses the host socket
-  at `/var/run/usbmuxd` (mounted via `docker-compose.yml`). A second `usbmuxd`
-  is never started inside the container.
-- **Privileged mode**: Required for USB device passthrough (`/dev/bus/usb`).
+- **No USB required**: DSM 7 lacks the `ipheth` kernel module — USB pairing
+  is impossible at the kernel level. All backups run over Wi-Fi (mDNS/Bonjour)
+  or Tailscale.
+- **Pairing files**: libimobiledevice reads pairing state from `/var/lib/lockdown/`
+  inside the container, which is volume-mounted from
+  `/volume1/iphone-backups/.lockdown` on the NAS. Files survive container
+  restarts and can be added at any time without restarting the container.
 - **host network mode**: Required for mDNS/Bonjour LAN discovery of iPhones.
+- **No privileged mode**: Container runs unprivileged — no USB passthrough needed.
 
 ---
 
@@ -177,8 +216,10 @@ docker buildx build --platform linux/amd64 \
 
 | Problem | Fix |
 |---|---|
-| Device not found over WiFi | Re-pair via USB with `setup.sh`, re-run WiFi sync enable |
+| Device not found | Confirm `.plist` exists in `/volume1/iphone-backups/.lockdown`; re-run `setup.sh` or re-upload |
+| "No pairing files" warning at startup | Add `.plist` via browser upload, `setup.sh`, or manual SCP |
 | Tailscale device not found | Check iPhone's Tailscale IP in `.env`, confirm both are connected |
-| usbmuxd socket warning | Check `/var/run/usbmuxd` volume mount in `docker-compose.yml` |
+| Upload page not reachable on :8765 | Confirm container is running; check `docker logs iphone-backup` for upload server PID |
+| Upload page not reachable via Caddy | Confirm Caddyfile snippet was added and `caddy reload` was run |
 | Dashboard shows no data | Run a manual backup first; check Caddyfile path |
 | Portainer build error | Confirm `image:` is used in compose, not `build:` |

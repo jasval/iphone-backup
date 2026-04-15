@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# ibackup.sh – incremental backup of all paired iPhones/iPads
+# ibackup.sh – incremental backup of all paired iPhones/iPads over Wi-Fi or Tailscale
+# Devices are discovered via idevice_id -l (mDNS/Bonjour on LAN, or Tailscale tunnel).
+# Pairing state is read from /var/lib/lockdown/ (mounted from NAS at container start).
 # Writes per-device status JSON to /backups/.status/<DeviceName>.json
 
 set -uo pipefail

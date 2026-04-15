@@ -1,53 +1,63 @@
 #!/usr/bin/env bash
-# setup.sh – Run ONCE with iPhone connected via USB to pair and enable WiFi sync.
-# Usage: docker exec -it iphone-backup /usr/local/bin/setup.sh
+# setup.sh – Run on your Mac (NOT inside Docker).
+# Copies iOS pairing .plist files to the NAS over SCP so the container
+# can discover and back up your devices over Wi-Fi or Tailscale.
+#
+# Usage: bash scripts/setup.sh
 
 set -euo pipefail
 
+LOCKDOWN_SRC="/var/db/lockdown"
+
 echo "========================================"
-echo "  iPhone Backup – First-Time Setup"
+echo "  iPhone Backup – Pairing File Sync"
 echo "========================================"
 echo ""
-echo "1. Make sure your iPhone is plugged in via USB and unlocked."
-echo "   Press ENTER when ready..."
-read -r
 
-echo ""
-echo "Checking for connected devices..."
-UDIDS=$(idevice_id -l 2>/dev/null || true)
-
-if [[ -z "$UDIDS" ]]; then
-    echo "ERROR: No device detected. Check USB cable and unlock your iPhone."
+PLISTS=("$LOCKDOWN_SRC"/*.plist)
+if [[ ! -e "${PLISTS[0]}" ]]; then
+    echo "ERROR: No .plist files found at $LOCKDOWN_SRC"
+    echo ""
+    echo "  Make sure you have trusted this Mac on each iPhone:"
+    echo "  1. Plug iPhone into Mac via USB"
+    echo "  2. Tap 'Trust This Computer' on the iPhone"
+    echo "  3. Re-run this script"
     exit 1
 fi
 
+echo "Found ${#PLISTS[@]} pairing file(s):"
+for f in "${PLISTS[@]}"; do
+    echo "  $(basename "$f")"
+done
 echo ""
-echo "Found device(s):"
-echo "$UDIDS"
+
+read -rp "NAS SSH target (e.g. admin@192.168.1.100): " NAS_TARGET
+read -rp "Lockdown path on NAS [/volume1/iphone-backups/.lockdown]: " NAS_PATH
+NAS_PATH="${NAS_PATH:-/volume1/iphone-backups/.lockdown}"
+
 echo ""
+echo "Creating target directory on NAS..."
+ssh "$NAS_TARGET" "mkdir -p '$NAS_PATH'"
 
-while IFS= read -r UDID; do
-    [[ -z "$UDID" ]] && continue
-    NAME=$(ideviceinfo -u "$UDID" -k DeviceName 2>/dev/null || echo "$UDID")
-    echo "--- Setting up: $NAME ($UDID)"
+echo "Copying pairing files..."
+COPIED=0
+FAILED=0
+for f in "${PLISTS[@]}"; do
+    UDID=$(basename "$f" .plist)
+    if scp "$f" "${NAS_TARGET}:${NAS_PATH}/"; then
+        echo "  ✓ $UDID"
+        COPIED=$((COPIED + 1))
+    else
+        echo "  ✗ $UDID  (scp failed)"
+        FAILED=$((FAILED + 1))
+    fi
+done
 
-    echo "  [1/3] Pairing device (accept 'Trust' dialog on iPhone if prompted)..."
-    idevicepair -u "$UDID" pair
-    sleep 2
-
-    echo "  [2/3] Verifying pairing..."
-    idevicepair -u "$UDID" validate && echo "  ✓ Paired OK" || {
-        echo "  Pairing failed. Make sure you tapped 'Trust' on the iPhone."
-        exit 1
-    }
-
-    echo "  [3/3] Enabling WiFi sync..."
-    pymobiledevice3 lockdown wifi-connections on -u "$UDID" && echo "  ✓ WiFi sync enabled" || \
-        echo "  WARNING: WiFi sync could not be enabled automatically. Enable it manually in Finder."
-
-    echo ""
-    echo "  ✓ Setup complete for $NAME. You can now unplug the cable."
-    echo ""
-done <<< "$UDIDS"
-
-echo "All devices configured. Backups will run automatically on the cron schedule."
+echo ""
+echo "Done. $COPIED file(s) copied, $FAILED failed."
+echo ""
+echo "Verify the container sees the pairing files:"
+echo "  docker exec iphone-backup ls /var/lib/lockdown/"
+echo ""
+echo "Run a manual backup to confirm device discovery:"
+echo "  docker exec iphone-backup /usr/local/bin/ibackup.sh"

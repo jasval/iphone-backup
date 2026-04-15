@@ -4,12 +4,10 @@ services:
     # See README.md → Step 1 for build & push instructions.
     image: jasval/iphone-backup
     container_name: iphone-backup
-    network_mode: host # Required for mDNS/Bonjour LAN discovery
-    privileged: true # Required for USB device access
+    network_mode: host  # Required for mDNS/Bonjour LAN discovery; also exposes :8765
     volumes:
       - ${BACKUP_PATH:-/volume1/iphone-backups}:/backups
-      - /dev/bus/usb:/dev/bus/usb # USB passthrough for initial pairing
-      - /var/run/usbmuxd:/var/run/usbmuxd # Synology DSM socket path
+      - ${LOCKDOWN_PATH:-/volume1/iphone-backups/.lockdown}:/var/lib/lockdown
     environment:
       # Cron schedule – default 3 am daily
       - BACKUP_CRON=${BACKUP_CRON:-0 2 * * *}

@@ -12,6 +12,15 @@ iphone-backup.home {
         file_server
     }
 
+    # Proxy pairing-file upload server
+    handle /upload* {
+        reverse_proxy localhost:8765
+    }
+
+    handle /pairing* {
+        reverse_proxy localhost:8765
+    }
+
     # Serve status JSON files (read by the dashboard)
     handle /.status* {
         root * /volume1/iphone-backups
