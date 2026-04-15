@@ -34,16 +34,16 @@ impl Default for Config {
 
 impl Config {
     pub fn config_path() -> Result<PathBuf> {
-        Ok(dirs::config_dir()
-            .context("cannot locate config directory")?
-            .join("iphone-backup")
-            .join("config.toml"))
+        let home = dirs::home_dir().context("cannot locate home directory")?;
+        Ok(home.join(".config/iphone-backup/config.toml"))
     }
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         if !path.exists() {
-            return Ok(Self::default());
+            let config = Self::default();
+            config.save()?;
+            return Ok(config);
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -172,5 +172,12 @@ schedule_minute = 45
         assert_eq!(c2.backup_path, c.backup_path);
         assert_eq!(c2.schedule_hour, c.schedule_hour);
         assert_eq!(c2.schedule_minute, c.schedule_minute);
+    }
+
+    #[test]
+    fn config_path_is_under_dotconfig() {
+        let path = Config::config_path().unwrap();
+        let s = path.to_string_lossy();
+        assert!(s.contains(".config/iphone-backup/config.toml"), "got: {s}");
     }
 }
