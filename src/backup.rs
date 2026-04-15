@@ -186,7 +186,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
 
 fn run_idevicebackup2(udid: &str, dest: &str, tx: &Sender<String>, log_path: &Path) -> bool {
     let mut child = match Command::new("idevicebackup2")
-        .args(["-u", udid, "backup", "--full", dest])
+        .args(["-u", udid, "backup", dest])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

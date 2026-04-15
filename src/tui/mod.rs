@@ -76,6 +76,7 @@ pub struct App {
     pub auto_scroll: bool,
     pub selected: usize,
     pub backup_running: bool,
+    pub backup_progress: Option<String>,
     backup_thread: Option<JoinHandle<()>>,
     pub storage_ok: bool,
     last_refresh: Instant,
@@ -130,6 +131,7 @@ impl App {
             auto_scroll: true,
             selected: 0,
             backup_running: false,
+            backup_progress: None,
             backup_thread: None,
             storage_ok: false,
             last_refresh: Instant::now(),
@@ -190,6 +192,7 @@ impl App {
             return;
         }
         self.backup_running = true;
+        self.backup_progress = None;
         self.auto_scroll = true;
         self.flash = Some("Backup started...".into());
         let tx = self.log_tx.clone();
@@ -282,6 +285,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                 }
                 app.restore_log_scroll = app.restore_logs.len().saturating_sub(1);
             } else {
+                if let Some(pct) = parse_progress(&line) {
+                    app.backup_progress = Some(pct);
+                }
                 app.logs.push(line.clone());
                 if app.logs.len() > 500 {
                     app.logs.drain(..50);
@@ -301,6 +307,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             .unwrap_or(false)
         {
             app.backup_running = false;
+            app.backup_progress = None;
             app.backup_thread = None;
             app.auto_scroll = false;
             app.refresh();
@@ -404,13 +411,11 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Tab | KeyCode::BackTab => {
             app.tab = app.tab.next();
             app.flash = None;
-            // Lazy-load data when switching tabs
             match &app.tab {
                 Tab::Restore => app.refresh_restore_tab(),
                 Tab::Services => app.refresh_services_tab(),
                 _ => {}
             }
-            return;
         }
         KeyCode::Char('1') => {
             app.tab = Tab::Dashboard;
@@ -437,6 +442,14 @@ fn handle_key(app: &mut App, code: KeyCode) {
         Tab::Restore => handle_restore_key(app, code),
         Tab::Services => handle_services_key(app, code),
     }
+}
+
+fn parse_progress(line: &str) -> Option<String> {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("Progress: ") {
+        return Some(rest.to_string());
+    }
+    None
 }
 
 fn handle_dashboard_key(app: &mut App, code: KeyCode) {

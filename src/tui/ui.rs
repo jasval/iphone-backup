@@ -48,10 +48,11 @@ fn render_title(f: &mut Frame, app: &App, area: Rect) {
     };
     let running = if app.backup_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
-        Span::styled(
-            format!("  {} backing up...", s),
-            Style::default().fg(Color::Yellow),
-        )
+        let progress = match &app.backup_progress {
+            Some(p) => format!("  {} backing up: {}", s, p),
+            None => format!("  {} backing up...", s),
+        };
+        Span::styled(progress, Style::default().fg(Color::Yellow))
     } else if app.pairing_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Span::styled(
