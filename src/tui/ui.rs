@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -61,8 +61,8 @@ fn render_title(f: &mut Frame, app: &App, area: Rect) {
             format!("  {} {} since {} — {}", s, job.job_id, job.start_time, progress)
         } else {
             match &app.backup_progress {
-                Some(p) => format!("  {} backing up: {}", s, p),
-                None => format!("  {} backing up...", s),
+                Some(p) => format!("  {s} backing up: {p}"),
+                None => format!("  {s} backing up..."),
             }
         };
         let color = if app.active_job_is_daemon {
@@ -74,13 +74,13 @@ fn render_title(f: &mut Frame, app: &App, area: Rect) {
     } else if app.pairing_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Span::styled(
-            format!("  {} pairing...", s),
+            format!("  {s} pairing..."),
             Style::default().fg(Color::Cyan),
         )
     } else if app.update_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Span::styled(
-            format!("  {} updating...", s),
+            format!("  {s} updating..."),
             Style::default().fg(Color::Magenta),
         )
     } else {
@@ -159,8 +159,8 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
             )
         } else {
             match &app.backup_progress {
-                Some(p) => format!("  {} backing up: {}", s, p),
-                None => format!("  {} backing up...", s),
+                Some(p) => format!("  {s} backing up: {p}"),
+                None => format!("  {s} backing up..."),
             }
         };
         let color = if app.active_job_is_daemon {
@@ -172,13 +172,13 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
     } else if app.pairing_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Line::from(Span::styled(
-            format!("  {} pairing...", s),
+            format!("  {s} pairing..."),
             Style::default().fg(Color::Cyan),
         ))
     } else if app.update_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Line::from(Span::styled(
-            format!("  {} updating...", s),
+            format!("  {s} updating..."),
             Style::default().fg(Color::Magenta),
         ))
     } else {
@@ -189,7 +189,7 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let timestamp = Line::from(Span::styled(
-        format!("  {}", now),
+        format!("  {now}"),
         Style::default().fg(Color::DarkGray),
     ));
 
@@ -202,9 +202,28 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    let lines = vec![Line::raw(""), storage, running, timestamp, Line::raw("")];
+    if let Some(pct) = app.backup_progress_pct {
+        // Show a progress gauge at the bottom of the status info block.
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(inner);
+
+        let lines = vec![Line::raw(""), storage, running, timestamp];
+        f.render_widget(Paragraph::new(Text::from(lines)), rows[0]);
+
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+            .percent(pct.min(100))
+            .label(format!("  {}%", pct.min(100)));
+        f.render_widget(gauge, rows[1]);
+    } else {
+        let lines = vec![Line::raw(""), storage, running, timestamp, Line::raw("")];
+        f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
 }
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
@@ -226,7 +245,7 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            vec![Span::styled(format!(" {} ", label), style), Span::raw("  ")]
+            vec![Span::styled(format!(" {label} "), style), Span::raw("  ")]
         })
         .collect();
     f.render_widget(
@@ -244,7 +263,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.tab {
         Tab::Dashboard => {
             if let Some(msg) = &app.flash {
-                Span::styled(format!(" {}", msg), flash_style)
+                Span::styled(format!(" {msg}"), flash_style)
             } else if app.backup_running || app.active_job.is_some() {
                 let source = if app.active_job_is_daemon { " (daemon)" } else { "" };
                 Span::styled(
@@ -255,14 +274,14 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Running...  [Tab] switch tab  [q] quit", hint_style)
             } else {
                 Span::styled(
-                    " [r] backup  [p] pair  [↑↓] select  [PgUp/PgDn] scroll  [Tab] tab  [q] quit",
+                    " [r] backup  [p] pair  [↑↓] select  [PgUp/PgDn] scroll  [c] clear logs  [Tab] tab  [q] quit",
                     hint_style,
                 )
             }
         }
         Tab::Restore => match &app.restore_flow {
             RestoreFlow::SelectBackup => Span::styled(
-                " [↑↓] select backup  [Enter] next  [R] refresh  [Tab] tab  [q] quit",
+                " [↑↓] select  [Enter] restore  [D] delete  [R] refresh  [Tab] tab  [q] quit",
                 hint_style,
             ),
             RestoreFlow::SelectDevice { .. } => Span::styled(
@@ -271,6 +290,9 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             ),
             RestoreFlow::Confirm { .. } => {
                 Span::styled(" [Enter] start restore  [Esc] back", hint_style)
+            }
+            RestoreFlow::ConfirmDelete { .. } => {
+                Span::styled(" [Enter] confirm delete  [Esc] cancel", hint_style)
             }
             RestoreFlow::Running => {
                 Span::styled(" Restore running...  [PgUp/PgDn] scroll", hint_style)
@@ -283,7 +305,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             } else if app.editing_schedule {
                 Span::styled(" Type HH:MM  [Enter] confirm  [Esc] cancel", hint_style)
             } else if let Some(msg) = &app.services_flash {
-                Span::styled(format!(" {}", msg), flash_style)
+                Span::styled(format!(" {msg}"), flash_style)
             } else {
                 Span::styled(
                     " [i] install  [l] load  [u] unload  [s] start  [p] pair  [e] path  [c] schedule  [U] update  [Tab] tab  [q] quit",
@@ -312,10 +334,10 @@ fn render_devices(f: &mut Frame, app: &App, area: Rect) {
         .title(Span::styled("Devices", Style::default().fg(Color::Cyan)));
 
     if app.devices.is_empty() {
-        let msg = if !app.storage_ok {
-            "Backup path not accessible.\n\nSet backup_path in:\n  iphone-backup config\n\nDefault: ~/Backups/iOS"
-        } else {
+        let msg = if app.storage_ok {
             "No backups yet.\n\nPress [r] to run a backup."
+        } else {
+            "Backup path not accessible.\n\nSet backup_path in:\n  iphone-backup config\n\nDefault: ~/Backups/iOS"
         };
         f.render_widget(
             Paragraph::new(msg)
@@ -356,13 +378,13 @@ fn render_devices(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::raw("   "),
                     Span::styled(
-                        format!("iOS {}  ·  {}", ios, size),
+                        format!("iOS {ios}  ·  {size}"),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
                 Line::from(vec![
                     Span::raw("   "),
-                    Span::styled(format!("{:<16}", age), Style::default().fg(Color::Gray)),
+                    Span::styled(format!("{age:<16}"), Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("{} {}", sym, d.status),
                         Style::default().fg(status_color),
@@ -385,7 +407,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         " [G] jump to end"
     };
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        format!("Logs{}", hint),
+        format!("Logs{hint}"),
         Style::default().fg(Color::Cyan),
     ));
 
@@ -413,6 +435,9 @@ fn render_restore(f: &mut Frame, app: &App, area: Rect) {
             backup_idx,
             device_idx,
         } => render_restore_confirm(f, app, area, *backup_idx, *device_idx),
+        RestoreFlow::ConfirmDelete { backup_idx } => {
+            render_restore_confirm_delete(f, app, area, *backup_idx);
+        }
         RestoreFlow::Running => render_restore_running(f, app, area),
         RestoreFlow::Done(msg) => render_restore_done(f, app, area, msg),
     }
@@ -427,7 +452,7 @@ fn render_restore_select_backup(f: &mut Frame, app: &App, area: Rect) {
     if app.restore_loading {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         f.render_widget(
-            Paragraph::new(format!("{} Scanning backups and devices...", s))
+            Paragraph::new(format!("{s} Scanning backups and devices..."))
                 .block(block)
                 .style(Style::default().fg(Color::DarkGray)),
             area,
@@ -571,10 +596,40 @@ fn render_restore_confirm(f: &mut Frame, app: &App, area: Rect, bidx: usize, did
     );
 }
 
+fn render_restore_confirm_delete(f: &mut Frame, app: &App, area: Rect, bidx: usize) {
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        "Delete Backup — Confirm",
+        Style::default().fg(Color::Red),
+    ));
+
+    let backup_name = app
+        .backups
+        .get(bidx)
+        .map(|b| b.name.replace('_', " "))
+        .unwrap_or_default();
+    let backup_size = app
+        .backups
+        .get(bidx)
+        .map(|b| b.size.clone())
+        .unwrap_or_default();
+
+    let text = format!(
+        "WARNING: This will PERMANENTLY delete the backup.\n\n\
+         Backup : {backup_name}  ({backup_size})\n\n\
+         Press [Enter] to confirm deletion, or [Esc] to cancel."
+    );
+    f.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .style(Style::default().fg(Color::White)),
+        area,
+    );
+}
+
 fn render_restore_running(f: &mut Frame, app: &App, area: Rect) {
     let s = SPINNER[app.spinner_frame % SPINNER.len()];
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        format!("Restore {} running...", s),
+        format!("Restore {s} running..."),
         Style::default().fg(Color::Yellow),
     ));
 
@@ -602,7 +657,7 @@ fn render_restore_done(f: &mut Frame, _app: &App, area: Rect, msg: &str) {
         "Restore — Complete",
         Style::default().fg(color),
     ));
-    let text = format!("{}\n\nPress [Esc] to return to the backup list.", msg);
+    let text = format!("{msg}\n\nPress [Esc] to return to the backup list.");
     f.render_widget(
         Paragraph::new(text)
             .block(block)
@@ -788,7 +843,7 @@ fn render_connected_devices(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        format!("{} · iOS {}", model, ios),
+                        format!("{model} · iOS {ios}"),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
@@ -829,9 +884,7 @@ fn log_line_color(l: &str) -> Line<'_> {
 }
 
 fn time_ago(iso: &str) -> String {
-    let dt = DateTime::parse_from_rfc3339(iso)
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
+    let dt = DateTime::parse_from_rfc3339(iso).map_or_else(|_| Utc::now(), |d| d.with_timezone(&Utc));
     let diff = Utc::now().signed_duration_since(dt);
     if diff.num_minutes() < 2 {
         "just now".into()

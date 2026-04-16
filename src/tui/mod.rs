@@ -51,6 +51,9 @@ pub enum RestoreFlow {
         backup_idx: usize,
         device_idx: usize,
     },
+    ConfirmDelete {
+        backup_idx: usize,
+    },
     Running,
     Done(String),
 }
@@ -78,6 +81,7 @@ pub struct App {
     pub selected: usize,
     pub backup_running: bool,
     pub backup_progress: Option<String>,
+    pub backup_progress_pct: Option<u16>,
     backup_thread: Option<JoinHandle<()>>,
     pub storage_ok: bool,
     last_refresh: Instant,
@@ -140,6 +144,7 @@ impl App {
             selected: 0,
             backup_running: false,
             backup_progress: None,
+            backup_progress_pct: None,
             backup_thread: None,
             storage_ok: false,
             last_refresh: Instant::now(),
@@ -222,12 +227,13 @@ impl App {
         }
         self.backup_running = true;
         self.backup_progress = None;
+        self.backup_progress_pct = None;
         self.auto_scroll = true;
         self.flash = Some("Backup started...".into());
         let tx = self.log_tx.clone();
         let backup_path = self.config.backup_path();
         self.backup_thread = Some(std::thread::spawn(move || {
-            let _ = backup::run(&backup_path, tx);
+            let _ = backup::run(&backup_path, &tx);
         }));
     }
 
@@ -258,13 +264,11 @@ impl App {
     fn apply_restore_refresh(&mut self) {
         let timed_out = self
             .restore_refresh_deadline
-            .map(|d| Instant::now() > d)
-            .unwrap_or(false);
+            .is_some_and(|d| Instant::now() > d);
         let finished = self
             .restore_refresh_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false);
+            .is_some_and(std::thread::JoinHandle::is_finished);
 
         if timed_out && !finished {
             // Abandon the thread — it may keep running until the subprocess exits,
@@ -358,8 +362,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                 }
                 app.restore_log_scroll = app.restore_logs.len().saturating_sub(1);
             } else {
-                if let Some(pct) = parse_progress(&line) {
-                    app.backup_progress = Some(pct);
+                if let Some(progress_str) = parse_progress(&line) {
+                    app.backup_progress_pct = extract_percentage(&progress_str);
+                    app.backup_progress = Some(progress_str);
                 }
                 app.logs.push(line.clone());
                 if app.logs.len() > 500 {
@@ -376,11 +381,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .backup_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             app.backup_running = false;
             app.backup_progress = None;
+            app.backup_progress_pct = None;
             app.backup_thread = None;
             app.auto_scroll = false;
             app.refresh();
@@ -397,8 +402,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .launchd_refresh_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             if let Some(handle) = app.launchd_refresh_thread.take() {
                 if let Ok(status) = handle.join() {
@@ -430,8 +434,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .pairing_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             app.pairing_running = false;
             app.pairing_thread = None;
@@ -444,8 +447,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .update_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let ok = app
                 .update_thread
@@ -466,8 +468,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .restore_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let ok = app
                 .restore_thread
@@ -510,7 +511,11 @@ fn handle_key(app: &mut App, code: KeyCode) {
 
     // Global keys
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+            return;
+        }
+        KeyCode::Esc => {
             // Esc inside restore wizard navigates back, not quit
             if app.tab == Tab::Restore {
                 handle_restore_key(app, code);
@@ -525,7 +530,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
             match &app.tab {
                 Tab::Restore => app.refresh_restore_tab(),
                 Tab::Services => app.refresh_services_tab(),
-                _ => {}
+                Tab::Dashboard => {}
             }
         }
         KeyCode::Char('1') => {
@@ -560,6 +565,34 @@ fn parse_progress(line: &str) -> Option<String> {
     if let Some(rest) = line.strip_prefix("Progress: ") {
         return Some(rest.to_string());
     }
+    // Also match any line that contains a percentage value (e.g. "Receiving files: 45%")
+    if extract_percentage(line).is_some() {
+        return Some(line.to_string());
+    }
+    None
+}
+
+/// Scan a line for the first `N%` pattern (N = 0–100) and return N.
+fn extract_percentage(line: &str) -> Option<u16> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i > 0 {
+            // Walk backwards to collect the digit run preceding '%'
+            let mut start = i - 1;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if bytes[start].is_ascii_digit() {
+                if let Ok(n) = line[start..i].parse::<u16>() {
+                    if n <= 100 {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
     None
 }
 
@@ -568,35 +601,33 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('r') => app.trigger_backup(),
         KeyCode::Char('p') => app.trigger_pair(),
-        KeyCode::Char('X') => {
-            if app.backup_running || app.active_job.is_some() {
-                match crate::pid::kill_active_backup() {
-                    Ok(()) => {
-                        app.flash = Some("Backup cancelled.".into());
-                        app.backup_running = false;
-                        app.backup_progress = None;
-                        // Drop the JoinHandle — the thread will finish once the
-                        // killed child unblocks child.wait() in run_idevicebackup2.
-                        app.backup_thread = None;
-                        app.active_job = None;
-                        app.active_job_is_daemon = false;
-                    }
-                    Err(e) => {
-                        app.flash = Some(format!("Cancel failed: {e}"));
-                    }
+        KeyCode::Char('X') if app.backup_running || app.active_job.is_some() => {
+            match crate::pid::kill_active_backup() {
+                Ok(()) => {
+                    app.flash = Some("Backup cancelled.".into());
+                    app.backup_running = false;
+                    app.backup_progress = None;
+                    app.backup_progress_pct = None;
+                    // Drop the JoinHandle — the thread will finish once the
+                    // killed child unblocks child.wait() in run_idevicebackup2.
+                    app.backup_thread = None;
+                    app.active_job = None;
+                    app.active_job_is_daemon = false;
+                }
+                Err(e) => {
+                    app.flash = Some(format!("Cancel failed: {e}"));
                 }
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.selected > 0 {
-                app.selected -= 1;
-            }
+        KeyCode::Char('X') => {}
+        KeyCode::Up | KeyCode::Char('k') if app.selected > 0 => {
+            app.selected -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.selected + 1 < app.devices.len() {
-                app.selected += 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') => {}
+        KeyCode::Down | KeyCode::Char('j') if app.selected + 1 < app.devices.len() => {
+            app.selected += 1;
         }
+        KeyCode::Down | KeyCode::Char('j') => {}
         KeyCode::PageUp => {
             app.log_scroll = app.log_scroll.saturating_sub(10);
             app.auto_scroll = false;
@@ -609,6 +640,18 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
             app.log_scroll = app.logs.len().saturating_sub(1);
             app.auto_scroll = true;
         }
+        KeyCode::Char('c') => {
+            let log_path = app.config.log_path();
+            match std::fs::write(&log_path, "") {
+                Ok(()) => {
+                    app.reload_logs();
+                    app.flash = Some("Logs cleared.".into());
+                }
+                Err(e) => {
+                    app.flash = Some(format!("Failed to clear logs: {e}"));
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -616,21 +659,21 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
 fn handle_restore_key(app: &mut App, code: KeyCode) {
     match &app.restore_flow.clone() {
         RestoreFlow::SelectBackup => match code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.restore_selected_backup > 0 {
-                    app.restore_selected_backup -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if app.restore_selected_backup > 0 => {
+                app.restore_selected_backup -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if app.restore_selected_backup + 1 < app.backups.len() {
-                    app.restore_selected_backup += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if app.restore_selected_backup + 1 < app.backups.len() =>
+            {
+                app.restore_selected_backup += 1;
             }
-            KeyCode::Enter => {
-                if !app.backups.is_empty() {
-                    let idx = app.restore_selected_backup;
-                    app.restore_flow = RestoreFlow::SelectDevice { backup_idx: idx };
-                }
+            KeyCode::Enter if !app.backups.is_empty() => {
+                let idx = app.restore_selected_backup;
+                app.restore_flow = RestoreFlow::SelectDevice { backup_idx: idx };
+            }
+            KeyCode::Char('D') if !app.backups.is_empty() => {
+                let idx = app.restore_selected_backup;
+                app.restore_flow = RestoreFlow::ConfirmDelete { backup_idx: idx };
             }
             KeyCode::Char('R') => app.refresh_restore_tab(),
             _ => {}
@@ -638,24 +681,20 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
         RestoreFlow::SelectDevice { backup_idx } => {
             let bidx = *backup_idx;
             match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if app.restore_selected_device > 0 {
-                        app.restore_selected_device -= 1;
-                    }
+                KeyCode::Up | KeyCode::Char('k') if app.restore_selected_device > 0 => {
+                    app.restore_selected_device -= 1;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if app.restore_selected_device + 1 < app.connected_devices.len() {
-                        app.restore_selected_device += 1;
-                    }
+                KeyCode::Down | KeyCode::Char('j')
+                    if app.restore_selected_device + 1 < app.connected_devices.len() =>
+                {
+                    app.restore_selected_device += 1;
                 }
-                KeyCode::Enter => {
-                    if !app.connected_devices.is_empty() {
-                        let didx = app.restore_selected_device;
-                        app.restore_flow = RestoreFlow::Confirm {
-                            backup_idx: bidx,
-                            device_idx: didx,
-                        };
-                    }
+                KeyCode::Enter if !app.connected_devices.is_empty() => {
+                    let didx = app.restore_selected_device;
+                    app.restore_flow = RestoreFlow::Confirm {
+                        backup_idx: bidx,
+                        device_idx: didx,
+                    };
                 }
                 KeyCode::Esc => app.restore_flow = RestoreFlow::SelectBackup,
                 KeyCode::Char('R') => app.refresh_restore_tab(),
@@ -689,6 +728,31 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
                 _ => {}
             }
         }
+        RestoreFlow::ConfirmDelete { backup_idx } => {
+            let bidx = *backup_idx;
+            match code {
+                KeyCode::Enter => {
+                    if let Some(backup) = app.backups.get(bidx).cloned() {
+                        let status_dir = app.config.status_dir();
+                        match restore::delete_backup(&backup, &status_dir) {
+                            Ok(()) => {
+                                app.flash = Some(format!("Deleted backup '{}'.", backup.name.replace('_', " ")));
+                                app.refresh();
+                            }
+                            Err(e) => {
+                                app.flash = Some(format!("Delete failed: {e}"));
+                            }
+                        }
+                    }
+                    app.restore_flow = RestoreFlow::SelectBackup;
+                    app.refresh_restore_tab();
+                }
+                KeyCode::Esc => {
+                    app.restore_flow = RestoreFlow::SelectBackup;
+                }
+                _ => {}
+            }
+        }
         RestoreFlow::Running => {
             // No keys during restore except scroll
             match code {
@@ -703,7 +767,7 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
             }
         }
         RestoreFlow::Done(_) => {
-            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            if matches!(code, KeyCode::Esc | KeyCode::Enter) {
                 app.restore_flow = RestoreFlow::SelectBackup;
                 app.restore_logs.clear();
             }
@@ -764,19 +828,18 @@ fn handle_services_key(app: &mut App, code: KeyCode) {
             app.editing_schedule = true;
             app.services_flash = None;
         }
-        KeyCode::Char('U') => {
+        KeyCode::Char('U') if !app.update_running => {
             // Run update
-            if !app.update_running {
-                app.update_running = true;
-                app.auto_scroll = true;
-                app.services_flash = Some("Update started — check Dashboard log...".into());
-                // Route output to the shared log channel (visible in Dashboard)
-                let tx = app.log_tx.clone();
-                app.update_thread = Some(update::run(tx));
-                // Switch to dashboard so the user can see the streaming output
-                app.tab = Tab::Dashboard;
-            }
+            app.update_running = true;
+            app.auto_scroll = true;
+            app.services_flash = Some("Update started — check Dashboard log...".into());
+            // Route output to the shared log channel (visible in Dashboard)
+            let tx = app.log_tx.clone();
+            app.update_thread = Some(update::run(tx));
+            // Switch to dashboard so the user can see the streaming output
+            app.tab = Tab::Dashboard;
         }
+        KeyCode::Char('U') => {}
         KeyCode::Char('R') => app.refresh_services_tab(),
         _ => {}
     }
@@ -810,8 +873,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                                 match launchd::set_schedule(hour, minute) {
                                     Ok(()) => {
                                         app.services_flash = Some(format!(
-                                            "Schedule updated to {:02}:{:02} and agent reloaded.",
-                                            hour, minute
+                                            "Schedule updated to {hour:02}:{minute:02} and agent reloaded."
                                         ));
                                     }
                                     Err(e) => {
@@ -821,8 +883,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                                 }
                             } else {
                                 app.services_flash = Some(format!(
-                                    "Schedule saved as {:02}:{:02} (agent not yet installed).",
-                                    hour, minute
+                                    "Schedule saved as {hour:02}:{minute:02} (agent not yet installed)."
                                 ));
                             }
                             app.refresh_services_tab();
@@ -834,7 +895,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                 }
                 None => {
                     app.services_flash =
-                        Some(format!("Invalid time '{}' — use HH:MM (e.g. 02:00)", input));
+                        Some(format!("Invalid time '{input}' — use HH:MM (e.g. 02:00)"));
                 }
             }
             app.editing_schedule = false;
@@ -843,12 +904,13 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Backspace => {
             app.schedule_input.pop();
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c)
             // Only allow digits and colon, max 5 chars (HH:MM)
-            if (c.is_ascii_digit() || c == ':') && app.schedule_input.len() < 5 {
-                app.schedule_input.push(c);
-            }
+            if (c.is_ascii_digit() || c == ':') && app.schedule_input.len() < 5 =>
+        {
+            app.schedule_input.push(c);
         }
+        KeyCode::Char(_) => {}
         _ => {}
     }
 }
@@ -876,7 +938,7 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
             let expanded_str = expanded.to_string_lossy();
             if !expanded.is_absolute() {
                 app.services_flash =
-                    Some(format!("Path must be absolute (got '{}').", expanded_str));
+                    Some(format!("Path must be absolute (got '{expanded_str}')."));
             } else if expanded_str.contains("..") {
                 app.services_flash = Some("Path must not contain '..' components.".into());
             } else {
@@ -910,5 +972,53 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
             app.path_input.push(c);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_progress_prefix() {
+        assert_eq!(parse_progress("Progress: 45%"), Some("45%".into()));
+    }
+
+    #[test]
+    fn parse_progress_percentage_in_line() {
+        assert_eq!(
+            parse_progress("Receiving files: 45%"),
+            Some("Receiving files: 45%".into())
+        );
+    }
+
+    #[test]
+    fn parse_progress_no_match() {
+        assert_eq!(parse_progress("Some random log line"), None);
+    }
+
+    #[test]
+    fn extract_percentage_basic() {
+        assert_eq!(extract_percentage("45%"), Some(45));
+    }
+
+    #[test]
+    fn extract_percentage_in_text() {
+        assert_eq!(extract_percentage("Receiving files: 72%"), Some(72));
+    }
+
+    #[test]
+    fn extract_percentage_100() {
+        assert_eq!(extract_percentage("100%"), Some(100));
+    }
+
+    #[test]
+    fn extract_percentage_none() {
+        assert_eq!(extract_percentage("no percentage here"), None);
+    }
+
+    #[test]
+    fn extract_percentage_over_100() {
+        assert_eq!(extract_percentage("150%"), None);
     }
 }

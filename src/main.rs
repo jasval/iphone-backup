@@ -40,10 +40,10 @@ fn main() -> Result<()> {
             // Print each log line to stderr so launchd captures it
             std::thread::spawn(move || {
                 for line in rx {
-                    eprintln!("{}", line);
+                    eprintln!("{line}");
                 }
             });
-            backup::run(&config.backup_path(), tx)?;
+            backup::run(&config.backup_path(), &tx)?;
         }
         Some(Cmd::Config) => {
             println!("Config file: {}", config::Config::config_path()?.display());

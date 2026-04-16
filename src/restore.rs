@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::io::{BufRead as _, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
@@ -11,6 +11,34 @@ pub struct BackupEntry {
     pub name: String,
     pub size: String,
     pub last_run: String,
+}
+
+/// Read from `reader` splitting on `\r` or `\n`, strip ANSI codes, and send
+/// each non-empty line to `tx`.
+fn drain_to_channel(reader: impl Read, tx: &Sender<String>) {
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if byte[0] == b'\n' || byte[0] == b'\r' {
+                    if !buf.is_empty() {
+                        let raw = String::from_utf8_lossy(&buf).to_string();
+                        let _ = tx.send(crate::backup::strip_ansi(&raw));
+                        buf.clear();
+                    }
+                } else {
+                    buf.push(byte[0]);
+                }
+            }
+        }
+    }
+    if !buf.is_empty() {
+        let raw = String::from_utf8_lossy(&buf).to_string();
+        let _ = tx.send(crate::backup::strip_ansi(&raw));
+    }
 }
 
 pub fn list_backups(backup_path: &Path) -> Vec<BackupEntry> {
@@ -45,7 +73,7 @@ pub fn list_backups(backup_path: &Path) -> Vec<BackupEntry> {
 }
 
 /// Spawn a thread that runs `idevicebackup2 -u <udid> restore <backup_dir>`,
-/// streaming stdout/stderr to `tx`. Returns the JoinHandle.
+/// streaming stdout/stderr to `tx`. Returns the `JoinHandle`.
 pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool> {
     let udid = udid.to_string();
     let backup_dir = backup_dir.to_path_buf();
@@ -71,16 +99,12 @@ pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool
         let tx2 = tx.clone();
         let stderr_thread = child.stderr.take().map(|stderr| {
             std::thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let _ = tx2.send(line);
-                }
+                drain_to_channel(stderr, &tx2);
             })
         });
 
         if let Some(stdout) = child.stdout.take() {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let _ = tx.send(line);
-            }
+            drain_to_channel(stdout, &tx);
         }
 
         if let Some(handle) = stderr_thread {
@@ -95,6 +119,32 @@ pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool
         }
         ok
     })
+}
+
+/// Delete a backup directory and its associated status files.
+/// Updates manifest.json to remove the device entry.
+pub fn delete_backup(entry: &BackupEntry, status_dir: &Path) -> std::io::Result<()> {
+    if entry.path.exists() {
+        std::fs::remove_dir_all(&entry.path)?;
+    }
+    let status_file = status_dir.join(format!("{}.json", entry.name));
+    if status_file.exists() {
+        std::fs::remove_file(&status_file)?;
+    }
+    let manifest_path = status_dir.join("manifest.json");
+    if manifest_path.exists() {
+        if let Ok(text) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(devices) = manifest.get_mut("devices").and_then(|d| d.as_array_mut()) {
+                    devices.retain(|v| v.as_str() != Some(&entry.name));
+                    if let Ok(updated) = serde_json::to_string_pretty(&manifest) {
+                        let _ = std::fs::write(&manifest_path, updated);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn dir_size(path: &Path) -> String {
@@ -125,7 +175,7 @@ fn walkdir(path: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
                 }
                 result.push(entry);
             }
-            Some(Err(_)) => continue,
+            Some(Err(_)) => {}
             None => {
                 stack.pop();
             }
@@ -134,6 +184,7 @@ fn walkdir(path: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
     Ok(result)
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -145,18 +196,17 @@ fn format_bytes(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.0}K", bytes as f64 / KB as f64)
     } else {
-        format!("{}B", bytes)
+        format!("{bytes}B")
     }
 }
 
 fn dir_modified(path: &Path) -> String {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
-        .map(|t| {
+        .map_or_else(|_| "unknown".into(), |t| {
             let dt: DateTime<Utc> = t.into();
             dt.to_rfc3339()
         })
-        .unwrap_or_else(|_| "unknown".into())
 }
 
 /// Write a log line to a file handle (shared with backup.rs pattern)
@@ -169,7 +219,7 @@ pub fn log_to_file(msg: &str, tx: &Sender<String>, log_path: &Path) {
         .append(true)
         .open(log_path)
     {
-        let _ = writeln!(f, "{}", line);
+        let _ = writeln!(f, "{line}");
     }
 }
 
@@ -238,5 +288,59 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, dir.path().join("Phone"));
         assert_eq!(entries[0].name, "Phone");
+    }
+
+    #[test]
+    fn delete_backup_removes_dir_and_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("Phone");
+        std::fs::create_dir(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("data.bin"), "test").unwrap();
+
+        let status_dir = dir.path().join(".status");
+        std::fs::create_dir(&status_dir).unwrap();
+        std::fs::write(
+            status_dir.join("Phone.json"),
+            r#"{"name":"Phone","status":"ok"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            status_dir.join("manifest.json"),
+            r#"{"devices":["Phone","iPad"]}"#,
+        )
+        .unwrap();
+
+        let entry = BackupEntry {
+            path: backup_dir.clone(),
+            name: "Phone".into(),
+            size: "1G".into(),
+            last_run: "2025-01-01T00:00:00Z".into(),
+        };
+        delete_backup(&entry, &status_dir).unwrap();
+
+        assert!(!backup_dir.exists());
+        assert!(!status_dir.join("Phone.json").exists());
+
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(status_dir.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let devices = manifest["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].as_str().unwrap(), "iPad");
+    }
+
+    #[test]
+    fn delete_backup_nonexistent_dir_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let status_dir = dir.path().join(".status");
+        std::fs::create_dir(&status_dir).unwrap();
+        let entry = BackupEntry {
+            path: dir.path().join("Nonexistent"),
+            name: "Nonexistent".into(),
+            size: "0B".into(),
+            last_run: "".into(),
+        };
+        assert!(delete_backup(&entry, &status_dir).is_ok());
     }
 }

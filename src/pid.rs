@@ -71,9 +71,7 @@ pub fn read_active_backup() -> Option<ActiveBackup> {
             let _ = std::fs::remove_file(&path);
             return None;
         }
-        let start_time = chrono::DateTime::parse_from_rfc3339(&record.started_at)
-            .map(|d| d.format("%H:%M:%S").to_string())
-            .unwrap_or_else(|_| "?".into());
+        let start_time = chrono::DateTime::parse_from_rfc3339(&record.started_at).map_or_else(|_| "?".into(), |d| d.format("%H:%M:%S").to_string());
         return Some(ActiveBackup {
             job_id: record.job_id,
             child_pid: record.child_pid,
@@ -98,7 +96,7 @@ pub fn read_active_backup() -> Option<ActiveBackup> {
 /// SIGKILL if still running. Also removes the PID file.
 pub fn kill_active_backup() -> Result<()> {
     let info = read_active_backup().context("no active backup found")?;
-    kill_child(info.child_pid)?;
+    kill_child(info.child_pid);
     let _ = remove_pid();
     Ok(())
 }
@@ -106,18 +104,19 @@ pub fn kill_active_backup() -> Result<()> {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn is_pid_running(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    let pid_i = i32::try_from(pid).unwrap_or(-1);
+    unsafe { libc::kill(pid_i, 0) == 0 }
 }
 
-fn kill_child(pid: u32) -> Result<()> {
+fn kill_child(pid: u32) {
+    let pid_i = i32::try_from(pid).unwrap_or(-1);
     unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+        libc::kill(pid_i, libc::SIGTERM);
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     if is_pid_running(pid) {
         unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
+            libc::kill(pid_i, libc::SIGKILL);
         }
     }
-    Ok(())
 }

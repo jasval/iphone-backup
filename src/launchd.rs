@@ -115,7 +115,7 @@ pub fn load() -> Result<()> {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // "already loaded" is not an error
         if !msg.contains("already") {
-            anyhow::bail!("launchctl load: {}", msg);
+            anyhow::bail!("launchctl load: {msg}");
         }
     }
     Ok(())
@@ -130,7 +130,7 @@ pub fn unload() -> Result<()> {
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         if !msg.contains("not loaded") && !msg.contains("Could not find") {
-            anyhow::bail!("launchctl unload: {}", msg);
+            anyhow::bail!("launchctl unload: {msg}");
         }
     }
     Ok(())
@@ -143,7 +143,7 @@ pub fn start() -> Result<()> {
         .context("running launchctl start")?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("launchctl start: {}", msg);
+        anyhow::bail!("launchctl start: {msg}");
     }
     Ok(())
 }
