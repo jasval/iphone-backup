@@ -650,6 +650,18 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
             app.log_scroll = app.logs.len().saturating_sub(1);
             app.auto_scroll = true;
         }
+        KeyCode::Char('c') => {
+            let log_path = app.config.log_path();
+            match std::fs::write(&log_path, "") {
+                Ok(()) => {
+                    app.reload_logs();
+                    app.flash = Some("Logs cleared.".into());
+                }
+                Err(e) => {
+                    app.flash = Some(format!("Failed to clear logs: {e}"));
+                }
+            }
+        }
         _ => {}
     }
 }

@@ -274,7 +274,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Running...  [Tab] switch tab  [q] quit", hint_style)
             } else {
                 Span::styled(
-                    " [r] backup  [p] pair  [↑↓] select  [PgUp/PgDn] scroll  [Tab] tab  [q] quit",
+                    " [r] backup  [p] pair  [↑↓] select  [PgUp/PgDn] scroll  [c] clear logs  [Tab] tab  [q] quit",
                     hint_style,
                 )
             }
