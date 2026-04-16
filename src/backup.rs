@@ -67,7 +67,7 @@ fn drain_stream(
             .append(true)
             .open(log_path)
         {
-            let _ = writeln!(f, "{}", line);
+            let _ = writeln!(f, "{line}");
         }
         buf.clear();
     };
@@ -75,7 +75,7 @@ fn drain_stream(
     let mut byte = [0u8; 1];
     loop {
         match reader.read(&mut byte) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(_) => {
                 if byte[0] == b'\n' || byte[0] == b'\r' {
                     flush(&mut buf);
@@ -83,7 +83,6 @@ fn drain_stream(
                     buf.push(byte[0]);
                 }
             }
-            Err(_) => break,
         }
     }
     flush(&mut buf);
@@ -100,11 +99,11 @@ fn log(msg: &str, tx: &Sender<String>, log_path: &Path) {
         .append(true)
         .open(log_path)
     {
-        let _ = writeln!(f, "{}", line);
+        let _ = writeln!(f, "{line}");
     }
 }
 
-pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
+pub fn run(backup_path: &Path, tx: &Sender<String>) -> Result<()> {
     // Verify the backup location is accessible before doing anything.
     if let Err(e) = std::fs::read_dir(backup_path) {
         let msg = format!(
@@ -137,20 +136,20 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
     let log_path = status_dir.join("ibackup.log");
 
     let job_id = crate::pid::make_job_id();
-    log(&format!("Job ID: {}", job_id), &tx, &log_path);
+    log(&format!("Job ID: {job_id}"), tx, &log_path);
 
-    log("Discovering devices...", &tx, &log_path);
+    log("Discovering devices...", tx, &log_path);
 
     // Discover all devices and which ones are reachable via network (WiFi/Tailscale).
     // Network-connected devices are backed up first and with the -n flag so
     // libimobiledevice uses the network path even when USB is also plugged in.
-    let (devices, error_logged) = discover_devices(&tx, &log_path);
+    let (devices, error_logged) = discover_devices(tx, &log_path);
 
     if devices.is_empty() {
         if !error_logged {
             log(
                 "No devices found. Is the iPhone on the same Wi-Fi or Tailscale? Is Wi-Fi sync enabled?",
-                &tx,
+                tx,
                 &log_path,
             );
         }
@@ -179,8 +178,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
         let info = device_info_batch(udid);
         let name = sanitize_name(
             info.get("DeviceName")
-                .map(|s| s.as_str())
-                .unwrap_or(udid),
+                .map_or(udid, std::string::String::as_str),
         );
         let model = info
             .get("ProductType")
@@ -195,8 +193,8 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
 
         let conn = if *use_network { "network" } else { "USB" };
         log(
-            &format!("Backing up {} ({}) via {}", name, udid, conn),
-            &tx,
+            &format!("Backing up {name} ({udid}) via {conn}"),
+            tx,
             &log_path,
         );
 
@@ -206,7 +204,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
             &dest.to_string_lossy(),
             &job_id,
             *use_network,
-            &tx,
+            tx,
             &log_path,
         );
         let elapsed = t0.elapsed().as_secs();
@@ -214,15 +212,15 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
 
         if ok {
             log(
-                &format!("✓ {} done in {}s ({})", name, elapsed, size),
-                &tx,
+                &format!("✓ {name} done in {elapsed}s ({size})"),
+                tx,
                 &log_path,
             );
         } else {
             failed += 1;
             log(
-                &format!("✗ {} failed after {}s", name, elapsed),
-                &tx,
+                &format!("✗ {name} failed after {elapsed}s"),
+                tx,
                 &log_path,
             );
             // Remove empty/corrupt backup directories — only if idevicebackup2
@@ -232,7 +230,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
             if !is_valid_backup(&dest) {
                 log(
                     &format!("  Removing empty backup dir: {}", dest.display()),
-                    &tx,
+                    tx,
                     &log_path,
                 );
                 let _ = std::fs::remove_dir_all(&dest);
@@ -277,8 +275,8 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
     )?;
 
     log(
-        &format!("=== Done. Devices: {}, Failed: {} ===", total, failed),
-        &tx,
+        &format!("=== Done. Devices: {total}, Failed: {failed} ==="),
+        tx,
         &log_path,
     );
     Ok(())
@@ -461,7 +459,7 @@ mod tests {
 
 /// Discover all connected devices, returning `(udid, use_network)` pairs.
 ///
-/// Network-reachable devices (WiFi sync / Tailscale) come first and are
+/// Network-reachable devices (`WiFi` sync / Tailscale) come first and are
 /// flagged `use_network = true` so `idevicebackup2 --network` is used,
 /// which keeps the USB port free and works over Tailscale. USB-only devices
 /// follow with `use_network = false`.
@@ -571,7 +569,7 @@ fn dir_size(path: &Path) -> String {
                 String::from_utf8_lossy(&o.stdout)
                     .split_whitespace()
                     .next()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             } else {
                 None
             }

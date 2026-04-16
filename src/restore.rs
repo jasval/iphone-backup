@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
-use serde_json;
 
 #[derive(Debug, Clone)]
 pub struct BackupEntry {
@@ -22,7 +21,7 @@ fn drain_to_channel(reader: impl Read, tx: &Sender<String>) {
     let mut byte = [0u8; 1];
     loop {
         match reader.read(&mut byte) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(_) => {
                 if byte[0] == b'\n' || byte[0] == b'\r' {
                     if !buf.is_empty() {
@@ -34,7 +33,6 @@ fn drain_to_channel(reader: impl Read, tx: &Sender<String>) {
                     buf.push(byte[0]);
                 }
             }
-            Err(_) => break,
         }
     }
     if !buf.is_empty() {
@@ -75,7 +73,7 @@ pub fn list_backups(backup_path: &Path) -> Vec<BackupEntry> {
 }
 
 /// Spawn a thread that runs `idevicebackup2 -u <udid> restore <backup_dir>`,
-/// streaming stdout/stderr to `tx`. Returns the JoinHandle.
+/// streaming stdout/stderr to `tx`. Returns the `JoinHandle`.
 pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool> {
     let udid = udid.to_string();
     let backup_dir = backup_dir.to_path_buf();
@@ -177,7 +175,7 @@ fn walkdir(path: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
                 }
                 result.push(entry);
             }
-            Some(Err(_)) => continue,
+            Some(Err(_)) => {}
             None => {
                 stack.pop();
             }
@@ -186,6 +184,7 @@ fn walkdir(path: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
     Ok(result)
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -197,18 +196,17 @@ fn format_bytes(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.0}K", bytes as f64 / KB as f64)
     } else {
-        format!("{}B", bytes)
+        format!("{bytes}B")
     }
 }
 
 fn dir_modified(path: &Path) -> String {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
-        .map(|t| {
+        .map_or_else(|_| "unknown".into(), |t| {
             let dt: DateTime<Utc> = t.into();
             dt.to_rfc3339()
         })
-        .unwrap_or_else(|_| "unknown".into())
 }
 
 /// Write a log line to a file handle (shared with backup.rs pattern)
@@ -221,7 +219,7 @@ pub fn log_to_file(msg: &str, tx: &Sender<String>, log_path: &Path) {
         .append(true)
         .open(log_path)
     {
-        let _ = writeln!(f, "{}", line);
+        let _ = writeln!(f, "{line}");
     }
 }
 

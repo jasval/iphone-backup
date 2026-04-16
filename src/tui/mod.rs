@@ -233,7 +233,7 @@ impl App {
         let tx = self.log_tx.clone();
         let backup_path = self.config.backup_path();
         self.backup_thread = Some(std::thread::spawn(move || {
-            let _ = backup::run(&backup_path, tx);
+            let _ = backup::run(&backup_path, &tx);
         }));
     }
 
@@ -264,13 +264,11 @@ impl App {
     fn apply_restore_refresh(&mut self) {
         let timed_out = self
             .restore_refresh_deadline
-            .map(|d| Instant::now() > d)
-            .unwrap_or(false);
+            .is_some_and(|d| Instant::now() > d);
         let finished = self
             .restore_refresh_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false);
+            .is_some_and(std::thread::JoinHandle::is_finished);
 
         if timed_out && !finished {
             // Abandon the thread — it may keep running until the subprocess exits,
@@ -383,8 +381,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .backup_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             app.backup_running = false;
             app.backup_progress = None;
@@ -405,8 +402,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .launchd_refresh_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             if let Some(handle) = app.launchd_refresh_thread.take() {
                 if let Ok(status) = handle.join() {
@@ -438,8 +434,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .pairing_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             app.pairing_running = false;
             app.pairing_thread = None;
@@ -452,8 +447,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .update_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let ok = app
                 .update_thread
@@ -474,8 +468,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         if app
             .restore_thread
             .as_ref()
-            .map(|t| t.is_finished())
-            .unwrap_or(false)
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let ok = app
                 .restore_thread
@@ -537,7 +530,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
             match &app.tab {
                 Tab::Restore => app.refresh_restore_tab(),
                 Tab::Services => app.refresh_services_tab(),
-                _ => {}
+                Tab::Dashboard => {}
             }
         }
         KeyCode::Char('1') => {
@@ -894,8 +887,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                                 match launchd::set_schedule(hour, minute) {
                                     Ok(()) => {
                                         app.services_flash = Some(format!(
-                                            "Schedule updated to {:02}:{:02} and agent reloaded.",
-                                            hour, minute
+                                            "Schedule updated to {hour:02}:{minute:02} and agent reloaded."
                                         ));
                                     }
                                     Err(e) => {
@@ -905,8 +897,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                                 }
                             } else {
                                 app.services_flash = Some(format!(
-                                    "Schedule saved as {:02}:{:02} (agent not yet installed).",
-                                    hour, minute
+                                    "Schedule saved as {hour:02}:{minute:02} (agent not yet installed)."
                                 ));
                             }
                             app.refresh_services_tab();
@@ -918,7 +909,7 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
                 }
                 None => {
                     app.services_flash =
-                        Some(format!("Invalid time '{}' — use HH:MM (e.g. 02:00)", input));
+                        Some(format!("Invalid time '{input}' — use HH:MM (e.g. 02:00)"));
                 }
             }
             app.editing_schedule = false;
@@ -960,7 +951,7 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
             let expanded_str = expanded.to_string_lossy();
             if !expanded.is_absolute() {
                 app.services_flash =
-                    Some(format!("Path must be absolute (got '{}').", expanded_str));
+                    Some(format!("Path must be absolute (got '{expanded_str}')."));
             } else if expanded_str.contains("..") {
                 app.services_flash = Some("Path must not contain '..' components.".into());
             } else {

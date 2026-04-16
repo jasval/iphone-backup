@@ -32,7 +32,7 @@ pub fn run(tx: Sender<String>) -> JoinHandle<bool> {
                 .ok()
                 .and_then(|p| {
                     // Walk up: release/ → target/ → repo root
-                    p.parent()?.parent()?.parent().map(|p| p.to_path_buf())
+                    p.parent()?.parent()?.parent().map(std::path::Path::to_path_buf)
                 })
                 .filter(|d| d.join("Cargo.toml").exists() && d.join(".git").exists());
 
@@ -61,13 +61,13 @@ pub fn run(tx: Sender<String>) -> JoinHandle<bool> {
                         .stderr(Stdio::piped()),
                     &tx,
                 );
-                if !tag_ok {
+                if tag_ok {
+                    let _ = tx.send("✓ Tag signature verified.".into());
+                } else {
                     let _ = tx.send(
                         "⚠ Tag signature could not be verified. Proceeding without verification."
                             .into(),
                     );
-                } else {
-                    let _ = tx.send("✓ Tag signature verified.".into());
                 }
 
                 let _ = tx.send("Building (cargo build --release)...".into());
@@ -93,7 +93,7 @@ pub fn run(tx: Sender<String>) -> JoinHandle<bool> {
                     bin_src.display(),
                     bin_dst.display()
                 ));
-                let cp_ok = if bin_dst.parent().map(is_writable).unwrap_or(false) {
+                let cp_ok = if bin_dst.parent().is_some_and(is_writable) {
                     std::fs::copy(&bin_src, &bin_dst).is_ok()
                 } else {
                     Command::new("sudo")

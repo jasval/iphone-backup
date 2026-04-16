@@ -34,9 +34,8 @@ pub fn load_summary(status_dir: &Path) -> Option<Summary> {
 pub fn load_devices(status_dir: &Path) -> Vec<DeviceStatus> {
     let text = std::fs::read_to_string(status_dir.join("manifest.json")).ok();
     let manifest: Option<Manifest> = text.and_then(|t| serde_json::from_str(&t).ok());
-    let manifest = match manifest {
-        Some(m) => m,
-        None => return vec![],
+    let Some(manifest) = manifest else {
+        return vec![];
     };
     manifest
         .devices
@@ -50,14 +49,13 @@ pub fn load_devices(status_dir: &Path) -> Vec<DeviceStatus> {
 
 /// Return the last `n` lines of the log file, oldest first.
 pub fn tail_log(log_path: &Path, n: usize) -> Vec<String> {
-    let text = match std::fs::read_to_string(log_path) {
-        Ok(t) => t,
-        Err(_) => return vec![],
+    let Ok(text) = std::fs::read_to_string(log_path) else {
+        return vec![];
     };
     let lines: Vec<_> = text.lines().collect();
     lines[lines.len().saturating_sub(n)..]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
