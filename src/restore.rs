@@ -69,19 +69,22 @@ pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool
         };
 
         let tx2 = tx.clone();
-        if let Some(stderr) = child.stderr.take() {
-            let stderr_thread = std::thread::spawn(move || {
+        let stderr_thread = child.stderr.take().map(|stderr| {
+            std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     let _ = tx2.send(line);
                 }
-            });
-            let _ = stderr_thread.join();
-        }
+            })
+        });
 
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let _ = tx.send(line);
             }
+        }
+
+        if let Some(handle) = stderr_thread {
+            let _ = handle.join();
         }
 
         let ok = child.wait().map(|s| s.success()).unwrap_or(false);
@@ -95,21 +98,55 @@ pub fn run(udid: &str, backup_dir: &Path, tx: Sender<String>) -> JoinHandle<bool
 }
 
 fn dir_size(path: &Path) -> String {
-    Command::new("du")
-        .args(["-sh", path.to_str().unwrap_or("")])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8_lossy(&o.stdout)
-                    .split_whitespace()
-                    .next()
-                    .map(|s| s.to_string())
-            } else {
-                None
+    let mut total: u64 = 0;
+    if let Ok(entries) = walkdir(path) {
+        for entry in entries {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                }
             }
-        })
-        .unwrap_or_else(|| "?".into())
+        }
+    }
+    format_bytes(total)
+}
+
+fn walkdir(path: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
+    let mut result = vec![];
+    let mut stack = vec![std::fs::read_dir(path)?];
+    while let Some(dir) = stack.last_mut() {
+        match dir.next() {
+            Some(Ok(entry)) => {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Ok(rd) = std::fs::read_dir(&path) {
+                        stack.push(rd);
+                    }
+                }
+                result.push(entry);
+            }
+            Some(Err(_)) => continue,
+            None => {
+                stack.pop();
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.0}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 fn dir_modified(path: &Path) -> String {

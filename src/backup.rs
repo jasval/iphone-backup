@@ -61,6 +61,9 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
     let _ = std::fs::set_permissions(&status_dir, Permissions::from_mode(0o700));
     let log_path = status_dir.join("ibackup.log");
 
+    let job_id = crate::pid::make_job_id();
+    log(&format!("Job ID: {}", job_id), &tx, &log_path);
+
     log("Discovering devices...", &tx, &log_path);
 
     let udids_str = match Command::new("idevice_id").arg("-l").output() {
@@ -125,7 +128,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
         log(&format!("Backing up {} ({})", name, udid), &tx, &log_path);
 
         let t0 = Instant::now();
-        let ok = run_idevicebackup2(udid, &dest.to_string_lossy(), &tx, &log_path);
+        let ok = run_idevicebackup2(udid, &dest.to_string_lossy(), &job_id, &tx, &log_path);
         let elapsed = t0.elapsed().as_secs();
         let size = dir_size(&dest);
 
@@ -184,7 +187,13 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
     Ok(())
 }
 
-fn run_idevicebackup2(udid: &str, dest: &str, tx: &Sender<String>, log_path: &Path) -> bool {
+fn run_idevicebackup2(
+    udid: &str,
+    dest: &str,
+    job_id: &str,
+    tx: &Sender<String>,
+    log_path: &Path,
+) -> bool {
     let mut child = match Command::new("idevicebackup2")
         .args(["-u", udid, "backup", dest])
         .stdout(Stdio::piped())
@@ -198,11 +207,16 @@ fn run_idevicebackup2(udid: &str, dest: &str, tx: &Sender<String>, log_path: &Pa
         }
     };
 
-    // Read stderr in a separate thread to avoid deadlock
+    // Record the child PID immediately so the TUI (or another session) can cancel.
+    let child_pid = child.id();
+    if let Err(e) = crate::pid::write_job(job_id, child_pid) {
+        let _ = tx.send(format!("[warn] could not write PID file: {e}"));
+    }
+
     let tx2 = tx.clone();
     let log_path2 = log_path.to_path_buf();
-    if let Some(stderr) = child.stderr.take() {
-        let stderr_thread = std::thread::spawn(move || {
+    let stderr_thread = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 let _ = tx2.send(line.clone());
                 if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -213,11 +227,9 @@ fn run_idevicebackup2(udid: &str, dest: &str, tx: &Sender<String>, log_path: &Pa
                     let _ = writeln!(f, "{}", line);
                 }
             }
-        });
-        let _ = stderr_thread.join();
-    }
+        })
+    });
 
-    // Read stdout in the current thread
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = tx.send(line.clone());
@@ -231,7 +243,13 @@ fn run_idevicebackup2(udid: &str, dest: &str, tx: &Sender<String>, log_path: &Pa
         }
     }
 
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    if let Some(handle) = stderr_thread {
+        let _ = handle.join();
+    }
+
+    let result = child.wait().map(|s| s.success()).unwrap_or(false);
+    let _ = crate::pid::remove_pid();
+    result
 }
 
 fn sanitize_name(raw: &str) -> String {

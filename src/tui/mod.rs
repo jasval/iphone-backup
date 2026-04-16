@@ -81,6 +81,10 @@ pub struct App {
     pub storage_ok: bool,
     last_refresh: Instant,
 
+    // ── Dashboard — active job / cancel ───────────────────────────────────────
+    pub active_job: Option<crate::pid::ActiveBackup>,
+    pub active_job_is_daemon: bool,
+
     // ── Restore tab ───────────────────────────────────────────────────────────
     pub restore_flow: RestoreFlow,
     pub backups: Vec<BackupEntry>,
@@ -91,12 +95,16 @@ pub struct App {
     restore_thread: Option<JoinHandle<bool>>,
     pub restore_logs: Vec<String>,
     pub restore_log_scroll: usize,
+    pub restore_loading: bool,
+    restore_refresh_thread: Option<JoinHandle<(Vec<BackupEntry>, Vec<Device>)>>,
+    restore_refresh_deadline: Option<Instant>,
 
     // ── Services tab ──────────────────────────────────────────────────────────
     pub launchd_status: LaunchdStatus,
     pub services_flash: Option<String>,
     pub pairing_running: bool,
     pairing_thread: Option<JoinHandle<()>>,
+    launchd_refresh_thread: Option<JoinHandle<LaunchdStatus>>,
 
     // ── Path editing ──────────────────────────────────────────────────────────
     pub editing_path: bool,
@@ -113,8 +121,7 @@ pub struct App {
 
 impl App {
     fn new(config: Config, tx: mpsc::Sender<String>, rx: mpsc::Receiver<String>) -> Self {
-        let launchd_status = launchd::status();
-        Self {
+        let mut app = Self {
             config,
             tab: Tab::Dashboard,
             should_quit: false,
@@ -136,6 +143,9 @@ impl App {
             storage_ok: false,
             last_refresh: Instant::now(),
 
+            active_job: crate::pid::read_active_backup(),
+            active_job_is_daemon: false,
+
             restore_flow: RestoreFlow::SelectBackup,
             backups: vec![],
             connected_devices: vec![],
@@ -145,11 +155,19 @@ impl App {
             restore_thread: None,
             restore_logs: vec![],
             restore_log_scroll: 0,
+            restore_loading: false,
+            restore_refresh_thread: None,
+            restore_refresh_deadline: None,
 
-            launchd_status,
+            launchd_status: LaunchdStatus {
+                installed: false,
+                loaded: false,
+                plist_path: launchd::plist_path(),
+            },
             services_flash: None,
             pairing_running: false,
             pairing_thread: None,
+            launchd_refresh_thread: None,
 
             editing_path: false,
             path_input: String::new(),
@@ -159,7 +177,14 @@ impl App {
 
             update_running: false,
             update_thread: None,
+        };
+        // If a PID file already exists at startup, it's from a daemon process.
+        if app.active_job.is_some() {
+            app.active_job_is_daemon = true;
         }
+        // Kick off async launchd status check.
+        app.refresh_services_tab();
+        app
     }
 
     pub fn refresh(&mut self) {
@@ -181,7 +206,10 @@ impl App {
     }
 
     fn trigger_backup(&mut self) {
-        if self.backup_running {
+        if self.backup_running || self.active_job.is_some() {
+            self.flash = Some(
+                "A backup is already running. Press [X] to cancel it first.".into(),
+            );
             return;
         }
         if !self.storage_ok {
@@ -216,18 +244,62 @@ impl App {
     }
 
     fn refresh_restore_tab(&mut self) {
-        self.backups = restore::list_backups(&self.config.backup_path());
-        self.connected_devices = device::list_connected();
-        if self.restore_selected_backup >= self.backups.len() {
-            self.restore_selected_backup = self.backups.len().saturating_sub(1);
+        self.restore_loading = true;
+        self.restore_refresh_deadline = Some(Instant::now() + Duration::from_secs(10));
+        let backup_path = self.config.backup_path();
+        self.restore_refresh_thread = Some(std::thread::spawn(move || {
+            let backups = restore::list_backups(&backup_path);
+            let devices = device::list_connected();
+            (backups, devices)
+        }));
+    }
+
+    fn apply_restore_refresh(&mut self) {
+        let timed_out = self
+            .restore_refresh_deadline
+            .map(|d| Instant::now() > d)
+            .unwrap_or(false);
+        let finished = self
+            .restore_refresh_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false);
+
+        if timed_out && !finished {
+            // Abandon the thread — it may keep running until the subprocess exits,
+            // but the UI no longer waits on it.
+            self.restore_refresh_thread = None;
+            self.restore_loading = false;
+            self.restore_refresh_deadline = None;
+            self.flash = Some("Device scan timed out (10 s). Press [R] to retry.".into());
+            return;
         }
-        if self.restore_selected_device >= self.connected_devices.len() {
-            self.restore_selected_device = self.connected_devices.len().saturating_sub(1);
+
+        if finished {
+            if let Some(handle) = self.restore_refresh_thread.take() {
+                if let Ok((backups, devices)) = handle.join() {
+                    self.backups = backups;
+                    self.connected_devices = devices;
+                    if self.restore_selected_backup >= self.backups.len() {
+                        self.restore_selected_backup = self.backups.len().saturating_sub(1);
+                    }
+                    if self.restore_selected_device >= self.connected_devices.len() {
+                        self.restore_selected_device =
+                            self.connected_devices.len().saturating_sub(1);
+                    }
+                }
+            }
+            self.restore_loading = false;
+            self.restore_refresh_deadline = None;
         }
     }
 
     fn refresh_services_tab(&mut self) {
-        self.launchd_status = launchd::status();
+        // Skip if a refresh is already in flight.
+        if self.launchd_refresh_thread.is_some() {
+            return;
+        }
+        self.launchd_refresh_thread = Some(std::thread::spawn(launchd::status));
     }
 }
 
@@ -313,6 +385,44 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             app.refresh();
             app.reload_logs();
             app.flash = Some("Backup complete.".into());
+        }
+
+        // Restore tab refresh — check every tick so timeout is evaluated promptly.
+        if app.restore_loading {
+            app.apply_restore_refresh();
+        }
+
+        // launchd status refresh completion
+        if app
+            .launchd_refresh_thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(false)
+        {
+            if let Some(handle) = app.launchd_refresh_thread.take() {
+                if let Ok(status) = handle.join() {
+                    app.launchd_status = status;
+                }
+            }
+        }
+
+        // Poll PID file every tick to detect daemon-started backups.
+        {
+            let pid_info = crate::pid::read_active_backup();
+            match (&pid_info, app.backup_running) {
+                (Some(_), false) => {
+                    app.active_job = pid_info;
+                    app.active_job_is_daemon = true;
+                }
+                (Some(info), true) => {
+                    app.active_job = Some(info.clone());
+                    app.active_job_is_daemon = false;
+                }
+                (None, _) => {
+                    app.active_job = None;
+                    app.active_job_is_daemon = false;
+                }
+            }
         }
 
         // Pairing thread completion
@@ -457,6 +567,25 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('r') => app.trigger_backup(),
         KeyCode::Char('p') => app.trigger_pair(),
+        KeyCode::Char('X') => {
+            if app.backup_running || app.active_job.is_some() {
+                match crate::pid::kill_active_backup() {
+                    Ok(()) => {
+                        app.flash = Some("Backup cancelled.".into());
+                        app.backup_running = false;
+                        app.backup_progress = None;
+                        // Drop the JoinHandle — the thread will finish once the
+                        // killed child unblocks child.wait() in run_idevicebackup2.
+                        app.backup_thread = None;
+                        app.active_job = None;
+                        app.active_job_is_daemon = false;
+                    }
+                    Err(e) => {
+                        app.flash = Some(format!("Cancel failed: {e}"));
+                    }
+                }
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.selected > 0 {
                 app.selected -= 1;

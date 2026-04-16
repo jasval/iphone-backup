@@ -2,6 +2,7 @@ mod backup;
 mod config;
 mod device;
 mod launchd;
+mod pid;
 mod restore;
 mod status;
 mod tui;
@@ -11,7 +12,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "iphone-backup", about = "Automated iPhone/iPad backup manager", version)]
+#[command(
+    name = "iphone-backup",
+    about = "Automated iPhone/iPad backup manager",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,

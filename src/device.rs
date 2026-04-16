@@ -21,7 +21,12 @@ pub fn list_connected() -> Vec<Device> {
             let name = device_info(&udid, "DeviceName").unwrap_or_else(|| udid.clone());
             let ios = device_info(&udid, "ProductVersion");
             let model = device_info(&udid, "ProductType");
-            Device { udid, name, ios, model }
+            Device {
+                udid,
+                name,
+                ios,
+                model,
+            }
         })
         .collect()
 }
@@ -66,7 +71,11 @@ fn device_info(udid: &str, key: &str) -> Option<String> {
         .ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     } else {
         None
     }

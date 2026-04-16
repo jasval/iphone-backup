@@ -140,19 +140,22 @@ fn stream_command(cmd: &mut Command, tx: &Sender<String>) -> bool {
     };
 
     let tx2 = tx.clone();
-    if let Some(stderr) = child.stderr.take() {
-        let stderr_thread = std::thread::spawn(move || {
+    let stderr_thread = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 let _ = tx2.send(line);
             }
-        });
-        let _ = stderr_thread.join();
-    }
+        })
+    });
 
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = tx.send(line);
         }
+    }
+
+    if let Some(handle) = stderr_thread {
+        let _ = handle.join();
     }
 
     child.wait().map(|s| s.success()).unwrap_or(false)

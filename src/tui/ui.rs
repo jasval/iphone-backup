@@ -46,13 +46,23 @@ fn render_title(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    let running = if app.backup_running {
+    let running = if app.backup_running || app.active_job.is_some() {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
-        let progress = match &app.backup_progress {
-            Some(p) => format!("  {} backing up: {}", s, p),
-            None => format!("  {} backing up...", s),
+        let label = if let Some(job) = &app.active_job {
+            let progress = app.backup_progress.as_deref().unwrap_or("running");
+            format!("  {} {} since {} — {}", s, job.job_id, job.start_time, progress)
+        } else {
+            match &app.backup_progress {
+                Some(p) => format!("  {} backing up: {}", s, p),
+                None => format!("  {} backing up...", s),
+            }
         };
-        Span::styled(progress, Style::default().fg(Color::Yellow))
+        let color = if app.active_job_is_daemon {
+            Color::Magenta
+        } else {
+            Color::Yellow
+        };
+        Span::styled(label, Style::default().fg(color))
     } else if app.pairing_running {
         let s = SPINNER[app.spinner_frame % SPINNER.len()];
         Span::styled(
@@ -123,7 +133,13 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         Tab::Dashboard => {
             if let Some(msg) = &app.flash {
                 Span::styled(format!(" {}", msg), flash_style)
-            } else if app.backup_running || app.pairing_running {
+            } else if app.backup_running || app.active_job.is_some() {
+                let source = if app.active_job_is_daemon { " (daemon)" } else { "" };
+                Span::styled(
+                    format!(" Running{source}...  [X] cancel  [Tab] switch tab  [q] quit"),
+                    hint_style,
+                )
+            } else if app.pairing_running {
                 Span::styled(" Running...  [Tab] switch tab  [q] quit", hint_style)
             } else {
                 Span::styled(
@@ -295,6 +311,17 @@ fn render_restore_select_backup(f: &mut Frame, app: &App, area: Rect) {
         "Restore — Select Backup",
         Style::default().fg(Color::Cyan),
     ));
+
+    if app.restore_loading {
+        let s = SPINNER[app.spinner_frame % SPINNER.len()];
+        f.render_widget(
+            Paragraph::new(format!("{} Scanning backups and devices...", s))
+                .block(block)
+                .style(Style::default().fg(Color::DarkGray)),
+            area,
+        );
+        return;
+    }
 
     if app.backups.is_empty() {
         f.render_widget(
