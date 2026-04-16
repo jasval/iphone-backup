@@ -828,8 +828,42 @@ fn render_connected_devices(f: &mut Frame, app: &App, area: Rect) {
         .connected_devices
         .iter()
         .map(|d| {
+            use crate::device::Connection;
+            if d.connection == Connection::UsbUnpaired {
+                let udid_line = if d.udid.is_empty() {
+                    "UDID unknown".to_string()
+                } else {
+                    d.udid.clone()
+                };
+                return ListItem::new(Text::from(vec![
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            &d.name,
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled("USB · Not paired", Style::default().fg(Color::Yellow)),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("Press [p] to pair this device", Style::default().fg(Color::DarkGray)),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(udid_line, Style::default().fg(Color::DarkGray)),
+                    ]),
+                    Line::raw(""),
+                ]));
+            }
             let ios = d.ios.as_deref().unwrap_or("?");
             let model = d.model.as_deref().unwrap_or("?");
+            let (conn_label, conn_color) = match d.connection {
+                Connection::Usb => ("USB", Color::Green),
+                Connection::Network => ("Wi-Fi", Color::Cyan),
+                Connection::Both => ("USB + Wi-Fi", Color::Green),
+                Connection::UsbUnpaired => unreachable!(),
+            };
             ListItem::new(Text::from(vec![
                 Line::from(vec![
                     Span::raw("  "),
@@ -839,6 +873,8 @@ fn render_connected_devices(f: &mut Frame, app: &App, area: Rect) {
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::raw("  "),
+                    Span::styled(conn_label, Style::default().fg(conn_color)),
                 ]),
                 Line::from(vec![
                     Span::raw("  "),
