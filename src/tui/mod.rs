@@ -51,6 +51,9 @@ pub enum RestoreFlow {
         backup_idx: usize,
         device_idx: usize,
     },
+    ConfirmDelete {
+        backup_idx: usize,
+    },
     Running,
     Done(String),
 }
@@ -78,6 +81,7 @@ pub struct App {
     pub selected: usize,
     pub backup_running: bool,
     pub backup_progress: Option<String>,
+    pub backup_progress_pct: Option<u16>,
     backup_thread: Option<JoinHandle<()>>,
     pub storage_ok: bool,
     last_refresh: Instant,
@@ -140,6 +144,7 @@ impl App {
             selected: 0,
             backup_running: false,
             backup_progress: None,
+            backup_progress_pct: None,
             backup_thread: None,
             storage_ok: false,
             last_refresh: Instant::now(),
@@ -222,6 +227,7 @@ impl App {
         }
         self.backup_running = true;
         self.backup_progress = None;
+        self.backup_progress_pct = None;
         self.auto_scroll = true;
         self.flash = Some("Backup started...".into());
         let tx = self.log_tx.clone();
@@ -358,8 +364,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                 }
                 app.restore_log_scroll = app.restore_logs.len().saturating_sub(1);
             } else {
-                if let Some(pct) = parse_progress(&line) {
-                    app.backup_progress = Some(pct);
+                if let Some(progress_str) = parse_progress(&line) {
+                    app.backup_progress_pct = extract_percentage(&progress_str);
+                    app.backup_progress = Some(progress_str);
                 }
                 app.logs.push(line.clone());
                 if app.logs.len() > 500 {
@@ -381,6 +388,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         {
             app.backup_running = false;
             app.backup_progress = None;
+            app.backup_progress_pct = None;
             app.backup_thread = None;
             app.auto_scroll = false;
             app.refresh();
@@ -560,6 +568,34 @@ fn parse_progress(line: &str) -> Option<String> {
     if let Some(rest) = line.strip_prefix("Progress: ") {
         return Some(rest.to_string());
     }
+    // Also match any line that contains a percentage value (e.g. "Receiving files: 45%")
+    if extract_percentage(line).is_some() {
+        return Some(line.to_string());
+    }
+    None
+}
+
+/// Scan a line for the first `N%` pattern (N = 0–100) and return N.
+fn extract_percentage(line: &str) -> Option<u16> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i > 0 {
+            // Walk backwards to collect the digit run preceding '%'
+            let mut start = i - 1;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if bytes[start].is_ascii_digit() {
+                if let Ok(n) = line[start..i].parse::<u16>() {
+                    if n <= 100 {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
     None
 }
 
@@ -575,6 +611,7 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
                         app.flash = Some("Backup cancelled.".into());
                         app.backup_running = false;
                         app.backup_progress = None;
+                        app.backup_progress_pct = None;
                         // Drop the JoinHandle — the thread will finish once the
                         // killed child unblocks child.wait() in run_idevicebackup2.
                         app.backup_thread = None;
@@ -632,6 +669,12 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
                     app.restore_flow = RestoreFlow::SelectDevice { backup_idx: idx };
                 }
             }
+            KeyCode::Char('D') => {
+                if !app.backups.is_empty() {
+                    let idx = app.restore_selected_backup;
+                    app.restore_flow = RestoreFlow::ConfirmDelete { backup_idx: idx };
+                }
+            }
             KeyCode::Char('R') => app.refresh_restore_tab(),
             _ => {}
         },
@@ -685,6 +728,31 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
                 }
                 KeyCode::Esc => {
                     app.restore_flow = RestoreFlow::SelectDevice { backup_idx: bidx };
+                }
+                _ => {}
+            }
+        }
+        RestoreFlow::ConfirmDelete { backup_idx } => {
+            let bidx = *backup_idx;
+            match code {
+                KeyCode::Enter => {
+                    if let Some(backup) = app.backups.get(bidx).cloned() {
+                        let status_dir = app.config.status_dir();
+                        match restore::delete_backup(&backup, &status_dir) {
+                            Ok(()) => {
+                                app.flash = Some(format!("Deleted backup '{}'.", backup.name.replace('_', " ")));
+                                app.refresh();
+                            }
+                            Err(e) => {
+                                app.flash = Some(format!("Delete failed: {e}"));
+                            }
+                        }
+                    }
+                    app.restore_flow = RestoreFlow::SelectBackup;
+                    app.refresh_restore_tab();
+                }
+                KeyCode::Esc => {
+                    app.restore_flow = RestoreFlow::SelectBackup;
                 }
                 _ => {}
             }
@@ -910,5 +978,53 @@ fn handle_path_edit_key(app: &mut App, code: KeyCode) {
             app.path_input.push(c);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_progress_prefix() {
+        assert_eq!(parse_progress("Progress: 45%"), Some("45%".into()));
+    }
+
+    #[test]
+    fn parse_progress_percentage_in_line() {
+        assert_eq!(
+            parse_progress("Receiving files: 45%"),
+            Some("Receiving files: 45%".into())
+        );
+    }
+
+    #[test]
+    fn parse_progress_no_match() {
+        assert_eq!(parse_progress("Some random log line"), None);
+    }
+
+    #[test]
+    fn extract_percentage_basic() {
+        assert_eq!(extract_percentage("45%"), Some(45));
+    }
+
+    #[test]
+    fn extract_percentage_in_text() {
+        assert_eq!(extract_percentage("Receiving files: 72%"), Some(72));
+    }
+
+    #[test]
+    fn extract_percentage_100() {
+        assert_eq!(extract_percentage("100%"), Some(100));
+    }
+
+    #[test]
+    fn extract_percentage_none() {
+        assert_eq!(extract_percentage("no percentage here"), None);
+    }
+
+    #[test]
+    fn extract_percentage_over_100() {
+        assert_eq!(extract_percentage("150%"), None);
     }
 }

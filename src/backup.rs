@@ -2,12 +2,92 @@ use anyhow::Result;
 use chrono::Local;
 use serde_json::json;
 use std::fs::Permissions;
-use std::io::{BufRead as _, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
+
+/// Strip ANSI/VT100 escape sequences (e.g. colour codes) from a string.
+pub(crate) fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // CSI sequence: consume until an ASCII letter (the terminator)
+                    for cc in chars.by_ref() {
+                        if cc.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                // bare ESC + non-'[': skip both characters
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Check whether a directory contains markers of a valid idevicebackup2 backup.
+/// Only removes the directory on failure if neither marker is present, meaning
+/// idevicebackup2 never successfully wrote any data.
+fn is_valid_backup(dir: &Path) -> bool {
+    dir.join("Manifest.db").exists() || dir.join("Status.plist").exists()
+}
+
+/// Read all bytes from `reader`, splitting on `\r` or `\n`, strip ANSI codes,
+/// truncate long lines, and send each non-empty line to `tx` and `log_path`.
+fn drain_stream(
+    reader: impl Read,
+    tx: &Sender<String>,
+    log_path: &Path,
+) {
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+
+    let flush = |buf: &mut Vec<u8>| {
+        if buf.is_empty() {
+            return;
+        }
+        let raw = String::from_utf8_lossy(buf).to_string();
+        let clean = strip_ansi(&raw);
+        let line = if clean.len() > 512 {
+            format!("{}…", &clean[..512])
+        } else {
+            clean
+        };
+        let _ = tx.send(line.clone());
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(f, "{}", line);
+        }
+        buf.clear();
+    };
+
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                if byte[0] == b'\n' || byte[0] == b'\r' {
+                    flush(&mut buf);
+                } else {
+                    buf.push(byte[0]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    flush(&mut buf);
+}
 
 fn log(msg: &str, tx: &Sender<String>, log_path: &Path) {
     let line = format!("[{}] {}", Local::now().format("%H:%M:%S"), msg);
@@ -150,6 +230,18 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
                 &tx,
                 &log_path,
             );
+            // Remove empty/corrupt backup directories — only if idevicebackup2
+            // never wrote valid data (no Manifest.db or Status.plist present).
+            // Pre-existing incremental backups that fail mid-way keep their
+            // prior data intact, so those are left alone.
+            if !is_valid_backup(&dest) {
+                log(
+                    &format!("  Removing empty backup dir: {}", dest.display()),
+                    &tx,
+                    &log_path,
+                );
+                let _ = std::fs::remove_dir_all(&dest);
+            }
         }
 
         let entry = json!({
@@ -166,7 +258,11 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
         let status_file = status_dir.join(format!("{name}.json"));
         std::fs::write(&status_file, serde_json::to_string_pretty(&entry)?)?;
         let _ = std::fs::set_permissions(&status_file, Permissions::from_mode(0o600));
-        names.push(name);
+        // Only add to manifest if the backup dir still exists (may have been
+        // removed above when the backup failed with no valid data).
+        if ok || dest.exists() {
+            names.push(name);
+        }
     }
 
     std::fs::write(
@@ -226,30 +322,12 @@ fn run_idevicebackup2(
     let log_path2 = log_path.to_path_buf();
     let stderr_thread = child.stderr.take().map(|stderr| {
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let _ = tx2.send(line.clone());
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path2)
-                {
-                    let _ = writeln!(f, "{}", line);
-                }
-            }
+            drain_stream(stderr, &tx2, &log_path2);
         })
     });
 
     if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = tx.send(line.clone());
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)
-            {
-                let _ = writeln!(f, "{}", line);
-            }
-        }
+        drain_stream(stdout, tx, log_path);
     }
 
     if let Some(handle) = stderr_thread {
@@ -277,6 +355,41 @@ fn sanitize_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_ansi_plain_text() {
+        assert_eq!(strip_ansi("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_ansi_color_code() {
+        assert_eq!(strip_ansi("\x1b[31mERROR\x1b[0m"), "ERROR");
+    }
+
+    #[test]
+    fn strip_ansi_complex_sequence() {
+        assert_eq!(strip_ansi("\x1b[1;32mOK\x1b[0m done"), "OK done");
+    }
+
+    #[test]
+    fn is_valid_backup_with_manifest_db() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Manifest.db"), "data").unwrap();
+        assert!(is_valid_backup(dir.path()));
+    }
+
+    #[test]
+    fn is_valid_backup_with_status_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Status.plist"), "data").unwrap();
+        assert!(is_valid_backup(dir.path()));
+    }
+
+    #[test]
+    fn is_valid_backup_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_valid_backup(dir.path()));
+    }
 
     #[test]
     fn sanitize_normal_name() {

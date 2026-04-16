@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -202,9 +202,28 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    let lines = vec![Line::raw(""), storage, running, timestamp, Line::raw("")];
+    if let Some(pct) = app.backup_progress_pct {
+        // Show a progress gauge at the bottom of the status info block.
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(inner);
+
+        let lines = vec![Line::raw(""), storage, running, timestamp];
+        f.render_widget(Paragraph::new(Text::from(lines)), rows[0]);
+
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+            .percent(pct.min(100))
+            .label(format!("  {}%", pct.min(100)));
+        f.render_widget(gauge, rows[1]);
+    } else {
+        let lines = vec![Line::raw(""), storage, running, timestamp, Line::raw("")];
+        f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
 }
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
@@ -262,7 +281,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         }
         Tab::Restore => match &app.restore_flow {
             RestoreFlow::SelectBackup => Span::styled(
-                " [↑↓] select backup  [Enter] next  [R] refresh  [Tab] tab  [q] quit",
+                " [↑↓] select  [Enter] restore  [D] delete  [R] refresh  [Tab] tab  [q] quit",
                 hint_style,
             ),
             RestoreFlow::SelectDevice { .. } => Span::styled(
@@ -271,6 +290,9 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             ),
             RestoreFlow::Confirm { .. } => {
                 Span::styled(" [Enter] start restore  [Esc] back", hint_style)
+            }
+            RestoreFlow::ConfirmDelete { .. } => {
+                Span::styled(" [Enter] confirm delete  [Esc] cancel", hint_style)
             }
             RestoreFlow::Running => {
                 Span::styled(" Restore running...  [PgUp/PgDn] scroll", hint_style)
@@ -413,6 +435,9 @@ fn render_restore(f: &mut Frame, app: &App, area: Rect) {
             backup_idx,
             device_idx,
         } => render_restore_confirm(f, app, area, *backup_idx, *device_idx),
+        RestoreFlow::ConfirmDelete { backup_idx } => {
+            render_restore_confirm_delete(f, app, area, *backup_idx)
+        }
         RestoreFlow::Running => render_restore_running(f, app, area),
         RestoreFlow::Done(msg) => render_restore_done(f, app, area, msg),
     }
@@ -562,6 +587,36 @@ fn render_restore_confirm(f: &mut Frame, app: &App, area: Rect, bidx: usize, did
          Backup : {backup_name}  ({backup_size})\n\
          Device : {device_name}\n\n\
          Press [Enter] to start restore, or [Esc] to go back."
+    );
+    f.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .style(Style::default().fg(Color::White)),
+        area,
+    );
+}
+
+fn render_restore_confirm_delete(f: &mut Frame, app: &App, area: Rect, bidx: usize) {
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        "Delete Backup — Confirm",
+        Style::default().fg(Color::Red),
+    ));
+
+    let backup_name = app
+        .backups
+        .get(bidx)
+        .map(|b| b.name.replace('_', " "))
+        .unwrap_or_default();
+    let backup_size = app
+        .backups
+        .get(bidx)
+        .map(|b| b.size.clone())
+        .unwrap_or_default();
+
+    let text = format!(
+        "WARNING: This will PERMANENTLY delete the backup.\n\n\
+         Backup : {backup_name}  ({backup_size})\n\n\
+         Press [Enter] to confirm deletion, or [Esc] to cancel."
     );
     f.render_widget(
         Paragraph::new(text)
