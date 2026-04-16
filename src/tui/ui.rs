@@ -1,7 +1,8 @@
+use super::cat;
 use super::{App, RestoreFlow, Tab};
 use chrono::{DateTime, Utc};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -14,17 +15,24 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
+    let use_header = area.height >= 18;
+    let header_h = if use_header { 7 } else { 1 };
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title bar
-            Constraint::Length(1), // tab bar
-            Constraint::Min(0),    // content
-            Constraint::Length(1), // footer
+            Constraint::Length(header_h), // header (cat + status) or compact title
+            Constraint::Length(1),        // tab bar
+            Constraint::Min(0),           // content
+            Constraint::Length(1),        // footer
         ])
         .split(area);
 
-    render_title(f, app, outer[0]);
+    if use_header {
+        render_header(f, app, outer[0]);
+    } else {
+        render_title(f, app, outer[0]);
+    }
     render_tabs(f, app, outer[1]);
     match app.tab {
         Tab::Dashboard => render_dashboard(f, app, outer[2]),
@@ -93,6 +101,110 @@ fn render_title(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(title).style(Style::default().bg(Color::Black)),
         area,
     );
+}
+
+// ── Header (cat + status info) ────────────────────────────────────────────────
+
+fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(22), Constraint::Min(0)])
+        .split(area);
+
+    render_cat(f, app, cols[0]);
+    render_status_info(f, app, cols[1]);
+}
+
+fn render_cat(f: &mut Frame, app: &App, area: Rect) {
+    let state = cat::cat_state(app);
+    let frame = cat::current_frame(state, app.spinner_frame);
+    let (label, color) = cat::status_label(state);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(label, Style::default().fg(color)));
+
+    let lines: Vec<Line> = frame.iter().map(|&s| Line::from(s)).collect();
+
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .alignment(Alignment::Center),
+        area,
+    );
+}
+
+fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+
+    let storage = if app.storage_ok {
+        Line::from(Span::styled(
+            "  ● storage",
+            Style::default().fg(Color::Green),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "  ○ storage not found",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+
+    let running = if app.backup_running || app.active_job.is_some() {
+        let s = SPINNER[app.spinner_frame % SPINNER.len()];
+        let label = if let Some(job) = &app.active_job {
+            let progress = app.backup_progress.as_deref().unwrap_or("running");
+            format!(
+                "  {} {} since {} — {}",
+                s, job.job_id, job.start_time, progress
+            )
+        } else {
+            match &app.backup_progress {
+                Some(p) => format!("  {} backing up: {}", s, p),
+                None => format!("  {} backing up...", s),
+            }
+        };
+        let color = if app.active_job_is_daemon {
+            Color::Magenta
+        } else {
+            Color::Yellow
+        };
+        Line::from(Span::styled(label, Style::default().fg(color)))
+    } else if app.pairing_running {
+        let s = SPINNER[app.spinner_frame % SPINNER.len()];
+        Line::from(Span::styled(
+            format!("  {} pairing...", s),
+            Style::default().fg(Color::Cyan),
+        ))
+    } else if app.update_running {
+        let s = SPINNER[app.spinner_frame % SPINNER.len()];
+        Line::from(Span::styled(
+            format!("  {} updating...", s),
+            Style::default().fg(Color::Magenta),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "  idle",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+
+    let timestamp = Line::from(Span::styled(
+        format!("  {}", now),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " iphone-backup ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let lines = vec![Line::raw(""), storage, running, timestamp, Line::raw("")];
+
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
