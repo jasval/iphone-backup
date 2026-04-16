@@ -601,36 +601,33 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('r') => app.trigger_backup(),
         KeyCode::Char('p') => app.trigger_pair(),
-        KeyCode::Char('X') => {
-            if app.backup_running || app.active_job.is_some() {
-                match crate::pid::kill_active_backup() {
-                    Ok(()) => {
-                        app.flash = Some("Backup cancelled.".into());
-                        app.backup_running = false;
-                        app.backup_progress = None;
-                        app.backup_progress_pct = None;
-                        // Drop the JoinHandle — the thread will finish once the
-                        // killed child unblocks child.wait() in run_idevicebackup2.
-                        app.backup_thread = None;
-                        app.active_job = None;
-                        app.active_job_is_daemon = false;
-                    }
-                    Err(e) => {
-                        app.flash = Some(format!("Cancel failed: {e}"));
-                    }
+        KeyCode::Char('X') if app.backup_running || app.active_job.is_some() => {
+            match crate::pid::kill_active_backup() {
+                Ok(()) => {
+                    app.flash = Some("Backup cancelled.".into());
+                    app.backup_running = false;
+                    app.backup_progress = None;
+                    app.backup_progress_pct = None;
+                    // Drop the JoinHandle — the thread will finish once the
+                    // killed child unblocks child.wait() in run_idevicebackup2.
+                    app.backup_thread = None;
+                    app.active_job = None;
+                    app.active_job_is_daemon = false;
+                }
+                Err(e) => {
+                    app.flash = Some(format!("Cancel failed: {e}"));
                 }
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.selected > 0 {
-                app.selected -= 1;
-            }
+        KeyCode::Char('X') => {}
+        KeyCode::Up | KeyCode::Char('k') if app.selected > 0 => {
+            app.selected -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.selected + 1 < app.devices.len() {
-                app.selected += 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') => {}
+        KeyCode::Down | KeyCode::Char('j') if app.selected + 1 < app.devices.len() => {
+            app.selected += 1;
         }
+        KeyCode::Down | KeyCode::Char('j') => {}
         KeyCode::PageUp => {
             app.log_scroll = app.log_scroll.saturating_sub(10);
             app.auto_scroll = false;
@@ -662,27 +659,21 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
 fn handle_restore_key(app: &mut App, code: KeyCode) {
     match &app.restore_flow.clone() {
         RestoreFlow::SelectBackup => match code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.restore_selected_backup > 0 {
-                    app.restore_selected_backup -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if app.restore_selected_backup > 0 => {
+                app.restore_selected_backup -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if app.restore_selected_backup + 1 < app.backups.len() {
-                    app.restore_selected_backup += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if app.restore_selected_backup + 1 < app.backups.len() =>
+            {
+                app.restore_selected_backup += 1;
             }
-            KeyCode::Enter => {
-                if !app.backups.is_empty() {
-                    let idx = app.restore_selected_backup;
-                    app.restore_flow = RestoreFlow::SelectDevice { backup_idx: idx };
-                }
+            KeyCode::Enter if !app.backups.is_empty() => {
+                let idx = app.restore_selected_backup;
+                app.restore_flow = RestoreFlow::SelectDevice { backup_idx: idx };
             }
-            KeyCode::Char('D') => {
-                if !app.backups.is_empty() {
-                    let idx = app.restore_selected_backup;
-                    app.restore_flow = RestoreFlow::ConfirmDelete { backup_idx: idx };
-                }
+            KeyCode::Char('D') if !app.backups.is_empty() => {
+                let idx = app.restore_selected_backup;
+                app.restore_flow = RestoreFlow::ConfirmDelete { backup_idx: idx };
             }
             KeyCode::Char('R') => app.refresh_restore_tab(),
             _ => {}
@@ -690,24 +681,20 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
         RestoreFlow::SelectDevice { backup_idx } => {
             let bidx = *backup_idx;
             match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if app.restore_selected_device > 0 {
-                        app.restore_selected_device -= 1;
-                    }
+                KeyCode::Up | KeyCode::Char('k') if app.restore_selected_device > 0 => {
+                    app.restore_selected_device -= 1;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if app.restore_selected_device + 1 < app.connected_devices.len() {
-                        app.restore_selected_device += 1;
-                    }
+                KeyCode::Down | KeyCode::Char('j')
+                    if app.restore_selected_device + 1 < app.connected_devices.len() =>
+                {
+                    app.restore_selected_device += 1;
                 }
-                KeyCode::Enter => {
-                    if !app.connected_devices.is_empty() {
-                        let didx = app.restore_selected_device;
-                        app.restore_flow = RestoreFlow::Confirm {
-                            backup_idx: bidx,
-                            device_idx: didx,
-                        };
-                    }
+                KeyCode::Enter if !app.connected_devices.is_empty() => {
+                    let didx = app.restore_selected_device;
+                    app.restore_flow = RestoreFlow::Confirm {
+                        backup_idx: bidx,
+                        device_idx: didx,
+                    };
                 }
                 KeyCode::Esc => app.restore_flow = RestoreFlow::SelectBackup,
                 KeyCode::Char('R') => app.refresh_restore_tab(),
@@ -841,19 +828,18 @@ fn handle_services_key(app: &mut App, code: KeyCode) {
             app.editing_schedule = true;
             app.services_flash = None;
         }
-        KeyCode::Char('U') => {
+        KeyCode::Char('U') if !app.update_running => {
             // Run update
-            if !app.update_running {
-                app.update_running = true;
-                app.auto_scroll = true;
-                app.services_flash = Some("Update started — check Dashboard log...".into());
-                // Route output to the shared log channel (visible in Dashboard)
-                let tx = app.log_tx.clone();
-                app.update_thread = Some(update::run(tx));
-                // Switch to dashboard so the user can see the streaming output
-                app.tab = Tab::Dashboard;
-            }
+            app.update_running = true;
+            app.auto_scroll = true;
+            app.services_flash = Some("Update started — check Dashboard log...".into());
+            // Route output to the shared log channel (visible in Dashboard)
+            let tx = app.log_tx.clone();
+            app.update_thread = Some(update::run(tx));
+            // Switch to dashboard so the user can see the streaming output
+            app.tab = Tab::Dashboard;
         }
+        KeyCode::Char('U') => {}
         KeyCode::Char('R') => app.refresh_services_tab(),
         _ => {}
     }
@@ -918,12 +904,13 @@ fn handle_schedule_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Backspace => {
             app.schedule_input.pop();
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c)
             // Only allow digits and colon, max 5 chars (HH:MM)
-            if (c.is_ascii_digit() || c == ':') && app.schedule_input.len() < 5 {
-                app.schedule_input.push(c);
-            }
+            if (c.is_ascii_digit() || c == ':') && app.schedule_input.len() < 5 =>
+        {
+            app.schedule_input.push(c);
         }
+        KeyCode::Char(_) => {}
         _ => {}
     }
 }
