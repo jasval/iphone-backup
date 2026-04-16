@@ -92,20 +92,15 @@ fn drain_stream(
 fn log(msg: &str, tx: &Sender<String>, log_path: &Path) {
     let line = format!("[{}] {}", Local::now().format("%H:%M:%S"), msg);
     let _ = tx.send(line.clone());
-    if let Ok(resolved) = log_path.canonicalize().or_else(|_| {
-        if let Some(parent) = log_path.parent() {
-            std::fs::create_dir_all(parent)?;
-            std::fs::set_permissions(parent, Permissions::from_mode(0o700))?;
-        }
-        log_path.canonicalize()
-    }) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&resolved)
-        {
-            let _ = writeln!(f, "{}", line);
-        }
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(f, "{}", line);
     }
 }
 
@@ -445,6 +440,16 @@ mod tests {
     fn sanitize_preserves_valid_name() {
         assert_eq!(sanitize_name("my-phone"), "my-phone");
         assert_eq!(sanitize_name("iPad Pro"), "iPad_Pro");
+    }
+
+    #[test]
+    fn log_writes_to_file_even_when_it_does_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("sub/ibackup.log");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        log("hello from log", &tx, &log_path);
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("hello from log"));
     }
 
     #[test]

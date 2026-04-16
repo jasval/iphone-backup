@@ -518,7 +518,11 @@ fn handle_key(app: &mut App, code: KeyCode) {
 
     // Global keys
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+            return;
+        }
+        KeyCode::Esc => {
             // Esc inside restore wizard navigates back, not quit
             if app.tab == Tab::Restore {
                 handle_restore_key(app, code);
@@ -771,7 +775,7 @@ fn handle_restore_key(app: &mut App, code: KeyCode) {
             }
         }
         RestoreFlow::Done(_) => {
-            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            if matches!(code, KeyCode::Esc | KeyCode::Enter) {
                 app.restore_flow = RestoreFlow::SelectBackup;
                 app.restore_logs.clear();
             }
