@@ -1,3 +1,4 @@
+pub mod cat;
 pub mod ui;
 
 use crate::device::Device;
