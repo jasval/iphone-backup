@@ -10,17 +10,28 @@ pub struct Device {
 }
 
 pub fn list_connected() -> Vec<Device> {
-    let out = match Command::new("idevice_id").arg("-l").output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => return vec![],
+    let out = match Command::new("idevice_id").args(["--network", "--list"]).output() {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+            String::from_utf8_lossy(&o.stdout).to_string()
+        }
+        // Fall back to all devices (USB + network) if no network devices found.
+        _ => match Command::new("idevice_id").arg("--list").output() {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => return vec![],
+        },
     };
     out.lines()
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.trim().is_empty())
         .map(|udid| {
             let udid = udid.trim().to_string();
-            let name = device_info(&udid, "DeviceName").unwrap_or_else(|| udid.clone());
-            let ios = device_info(&udid, "ProductVersion");
-            let model = device_info(&udid, "ProductType");
+            // Fetch all properties in one call instead of three.
+            let info = device_info_all(&udid);
+            let name = info
+                .get("DeviceName")
+                .cloned()
+                .unwrap_or_else(|| udid.clone());
+            let ios = info.get("ProductVersion").cloned();
+            let model = info.get("ProductType").cloned();
             Device {
                 udid,
                 name,
@@ -64,19 +75,26 @@ pub fn pair(udid: Option<&str>, tx: &Sender<String>) {
     }
 }
 
-fn device_info(udid: &str, key: &str) -> Option<String> {
-    let out = Command::new("ideviceinfo")
-        .args(["-u", udid, "-k", key])
+/// Fetch all device properties in one `ideviceinfo` call.
+fn device_info_all(udid: &str) -> std::collections::HashMap<String, String> {
+    let out = match Command::new("ideviceinfo")
+        .args(["--udid", udid])
         .output()
-        .ok()?;
-    if out.status.success() {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
-    } else {
-        None
-    }
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return std::collections::HashMap::new(),
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, ": ");
+            let key = parts.next()?.trim().to_string();
+            let val = parts.next()?.trim().to_string();
+            if key.is_empty() || val.is_empty() {
+                None
+            } else {
+                Some((key, val))
+            }
+        })
+        .collect()
 }

@@ -66,39 +66,19 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
 
     log("Discovering devices...", &tx, &log_path);
 
-    let udids_str = match Command::new("idevice_id").arg("-l").output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(o) => {
+    // Discover all devices and which ones are reachable via network (WiFi/Tailscale).
+    // Network-connected devices are backed up first and with the -n flag so
+    // libimobiledevice uses the network path even when USB is also plugged in.
+    let (devices, error_logged) = discover_devices(&tx, &log_path);
+
+    if devices.is_empty() {
+        if !error_logged {
             log(
-                &format!(
-                    "idevice_id error: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
+                "No devices found. Is the iPhone on the same Wi-Fi or Tailscale? Is Wi-Fi sync enabled?",
                 &tx,
                 &log_path,
             );
-            String::new()
         }
-        Err(e) => {
-            log(
-                &format!(
-                    "ERROR: idevice_id not found ({e}). Install with: brew install libimobiledevice"
-                ),
-                &tx,
-                &log_path,
-            );
-            String::new()
-        }
-    };
-
-    let udids: Vec<&str> = udids_str.lines().filter(|l| !l.is_empty()).collect();
-
-    if udids.is_empty() {
-        log(
-            "No devices found. Is the iPhone on the same Wi-Fi? Is Wi-Fi sync enabled?",
-            &tx,
-            &log_path,
-        );
         let summary = json!({
             "last_run": chrono::Utc::now().to_rfc3339(),
             "status": "no_devices",
@@ -112,29 +92,54 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
         return Ok(());
     }
 
+    let _ = error_logged; // suppress unused warning
+
     let mut total = 0u64;
     let mut failed = 0u64;
     let mut names: Vec<String> = Vec::new();
 
-    for udid in &udids {
+    for (udid, use_network) in &devices {
         total += 1;
-        let name =
-            sanitize_name(&device_info(udid, "DeviceName").unwrap_or_else(|| udid.to_string()));
-        let model = device_info(udid, "ProductType").unwrap_or_else(|| "Unknown".into());
-        let ios = device_info(udid, "ProductVersion").unwrap_or_else(|| "Unknown".into());
+        // Fetch all device properties in a single ideviceinfo call.
+        let info = device_info_batch(udid);
+        let name = sanitize_name(
+            info.get("DeviceName")
+                .map(|s| s.as_str())
+                .unwrap_or(udid),
+        );
+        let model = info
+            .get("ProductType")
+            .cloned()
+            .unwrap_or_else(|| "Unknown".into());
+        let ios = info
+            .get("ProductVersion")
+            .cloned()
+            .unwrap_or_else(|| "Unknown".into());
         let dest = backup_path.join(&name);
         std::fs::create_dir_all(&dest)?;
 
-        log(&format!("Backing up {} ({})", name, udid), &tx, &log_path);
+        let conn = if *use_network { "network" } else { "USB" };
+        log(
+            &format!("Backing up {} ({}) via {}", name, udid, conn),
+            &tx,
+            &log_path,
+        );
 
         let t0 = Instant::now();
-        let ok = run_idevicebackup2(udid, &dest.to_string_lossy(), &job_id, &tx, &log_path);
+        let ok = run_idevicebackup2(
+            udid,
+            &dest.to_string_lossy(),
+            &job_id,
+            *use_network,
+            &tx,
+            &log_path,
+        );
         let elapsed = t0.elapsed().as_secs();
         let size = dir_size(&dest);
 
         if ok {
             log(
-                &format!("Backing up {} ({}…)", name, &udid[..8.min(udid.len())]),
+                &format!("✓ {} done in {}s ({})", name, elapsed, size),
                 &tx,
                 &log_path,
             );
@@ -156,6 +161,7 @@ pub fn run(backup_path: &Path, tx: Sender<String>) -> Result<()> {
             "last_run": chrono::Utc::now().to_rfc3339(),
             "size": size,
             "elapsed_sec": elapsed,
+            "connection": if *use_network { "network" } else { "usb" },
         });
         let status_file = status_dir.join(format!("{name}.json"));
         std::fs::write(&status_file, serde_json::to_string_pretty(&entry)?)?;
@@ -191,15 +197,18 @@ fn run_idevicebackup2(
     udid: &str,
     dest: &str,
     job_id: &str,
+    use_network: bool,
     tx: &Sender<String>,
     log_path: &Path,
 ) -> bool {
-    let mut child = match Command::new("idevicebackup2")
-        .args(["-u", udid, "backup", dest])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let mut cmd = Command::new("idevicebackup2");
+    if use_network {
+        cmd.arg("--network");
+    }
+    cmd.args(["--udid", udid, "backup", dest]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(format!("[{}] ERROR: {e}", Local::now().format("%H:%M:%S")));
@@ -332,21 +341,106 @@ mod tests {
     }
 }
 
-fn device_info(udid: &str, key: &str) -> Option<String> {
-    let out = Command::new("ideviceinfo")
-        .args(["-u", udid, "-k", key])
-        .output()
-        .ok()?;
-    if out.status.success() {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
+/// Discover all connected devices, returning `(udid, use_network)` pairs.
+///
+/// Network-reachable devices (WiFi sync / Tailscale) come first and are
+/// flagged `use_network = true` so `idevicebackup2 --network` is used,
+/// which keeps the USB port free and works over Tailscale. USB-only devices
+/// follow with `use_network = false`.
+///
+/// Returns `(devices, fatal_error_logged)`.
+fn discover_devices(
+    tx: &Sender<String>,
+    log_path: &Path,
+) -> (Vec<(String, bool)>, bool) {
+    // -- All devices (USB + network) ------------------------------------------
+    let all_udids: Vec<String> = match Command::new("idevice_id").arg("--list").output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect(),
+        Ok(o) => {
+            log(
+                &format!(
+                    "idevice_id error: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                tx,
+                log_path,
+            );
+            return (vec![], true);
         }
-    } else {
-        None
+        Err(e) => {
+            log(
+                &format!(
+                    "ERROR: idevice_id not found ({e}). Install with: brew install libimobiledevice"
+                ),
+                tx,
+                log_path,
+            );
+            return (vec![], true);
+        }
+    };
+
+    // -- Network-only devices (WiFi / Tailscale) -------------------------------
+    let network_udids: std::collections::HashSet<String> =
+        match Command::new("idevice_id").args(["--network", "--list"]).output() {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .collect(),
+            _ => std::collections::HashSet::new(),
+        };
+
+    if !network_udids.is_empty() {
+        log(
+            &format!(
+                "Found {} device(s) via network (WiFi/Tailscale), {} total",
+                network_udids.len(),
+                all_udids.len()
+            ),
+            tx,
+            log_path,
+        );
     }
+
+    // Network-reachable devices first, then USB-only.
+    let mut result: Vec<(String, bool)> = Vec::new();
+    for udid in &all_udids {
+        if network_udids.contains(udid) {
+            result.push((udid.clone(), true));
+        }
+    }
+    for udid in &all_udids {
+        if !network_udids.contains(udid) {
+            result.push((udid.clone(), false));
+        }
+    }
+    (result, false)
+}
+
+/// Fetch all device properties in a single `ideviceinfo` call and return
+/// them as a map.  Much faster than one call per key.
+fn device_info_batch(udid: &str) -> std::collections::HashMap<String, String> {
+    let out = match Command::new("ideviceinfo").args(["--udid", udid]).output() {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return std::collections::HashMap::new(),
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, ": ");
+            let key = parts.next()?.trim().to_string();
+            let val = parts.next()?.trim().to_string();
+            if key.is_empty() || val.is_empty() {
+                None
+            } else {
+                Some((key, val))
+            }
+        })
+        .collect()
 }
 
 fn dir_size(path: &Path) -> String {
