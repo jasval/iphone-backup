@@ -332,6 +332,11 @@ fn run_idevicebackup2(
     result
 }
 
+/// Strip suffixes like " (Network)" that some libimobiledevice versions append to UDIDs.
+fn strip_udid_suffix(s: &str) -> String {
+    s.split_whitespace().next().unwrap_or(s).to_string()
+}
+
 fn sanitize_name(raw: &str) -> String {
     let s: String = raw
         .chars()
@@ -474,7 +479,7 @@ fn discover_devices(
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
+            .map(|l| strip_udid_suffix(l.trim()))
             .collect(),
         Ok(o) => {
             log(
@@ -505,7 +510,7 @@ fn discover_devices(
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_string())
+                .map(|l| strip_udid_suffix(l.trim()))
                 .collect(),
             _ => std::collections::HashSet::new(),
         };
@@ -522,12 +527,10 @@ fn discover_devices(
         );
     }
 
-    // Network-reachable devices first, then USB-only.
+    // Network-reachable devices first (including network-only), then USB-only.
     let mut result: Vec<(String, bool)> = Vec::new();
-    for udid in &all_udids {
-        if network_udids.contains(udid) {
-            result.push((udid.clone(), true));
-        }
+    for udid in &network_udids {
+        result.push((udid.clone(), true));
     }
     for udid in &all_udids {
         if !network_udids.contains(udid) {

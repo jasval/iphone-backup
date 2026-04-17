@@ -30,12 +30,12 @@ pub fn list_connected() -> Vec<Device> {
 
     let usb_set: std::collections::HashSet<String> = all_out
         .lines()
-        .map(|l| l.trim().to_string())
+        .map(|l| strip_udid_suffix(l.trim()))
         .filter(|l| !l.is_empty())
         .collect();
     let net_set: std::collections::HashSet<String> = net_out
         .lines()
-        .map(|l| l.trim().to_string())
+        .map(|l| strip_udid_suffix(l.trim()))
         .filter(|l| !l.is_empty())
         .collect();
 
@@ -179,6 +179,10 @@ fn detect_usb_ios() -> Vec<Device> {
     }
 
     devices
+}
+
+fn strip_udid_suffix(s: &str) -> String {
+    s.split_whitespace().next().unwrap_or(s).to_string()
 }
 
 fn parse_ioreg_str(line: &str, key: &str) -> Option<String> {

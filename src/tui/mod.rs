@@ -110,6 +110,8 @@ pub struct App {
     pub pairing_running: bool,
     pairing_thread: Option<JoinHandle<()>>,
     launchd_refresh_thread: Option<JoinHandle<LaunchdStatus>>,
+    device_refresh_thread: Option<JoinHandle<Vec<Device>>>,
+    last_device_refresh: Instant,
 
     // ── Path editing ──────────────────────────────────────────────────────────
     pub editing_path: bool,
@@ -174,6 +176,8 @@ impl App {
             pairing_running: false,
             pairing_thread: None,
             launchd_refresh_thread: None,
+            device_refresh_thread: None,
+            last_device_refresh: Instant::now() - Duration::from_secs(60),
 
             editing_path: false,
             path_input: String::new(),
@@ -305,6 +309,14 @@ impl App {
             return;
         }
         self.launchd_refresh_thread = Some(std::thread::spawn(launchd::status));
+    }
+
+    pub fn refresh_connected_devices(&mut self) {
+        if self.device_refresh_thread.is_some() || self.restore_loading {
+            return;
+        }
+        self.last_device_refresh = Instant::now();
+        self.device_refresh_thread = Some(std::thread::spawn(device::list_connected));
     }
 }
 
@@ -484,6 +496,26 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             app.restore_flow = RestoreFlow::Done(msg);
         }
 
+        // Device refresh thread completion
+        if app
+            .device_refresh_thread
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            if let Some(handle) = app.device_refresh_thread.take() {
+                if let Ok(devices) = handle.join() {
+                    app.connected_devices = devices;
+                }
+            }
+        }
+
+        // Poll connected devices every 10 s when on Services tab
+        if app.tab == Tab::Services
+            && app.last_device_refresh.elapsed() > Duration::from_secs(10)
+        {
+            app.refresh_connected_devices();
+        }
+
         // Periodic refresh (every 30 s)
         if app.last_refresh.elapsed() > Duration::from_secs(30) {
             app.refresh();
@@ -529,7 +561,10 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.flash = None;
             match &app.tab {
                 Tab::Restore => app.refresh_restore_tab(),
-                Tab::Services => app.refresh_services_tab(),
+                Tab::Services => {
+                    app.refresh_services_tab();
+                    app.refresh_connected_devices();
+                }
                 Tab::Dashboard => {}
             }
         }
@@ -548,6 +583,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.tab = Tab::Services;
             app.flash = None;
             app.refresh_services_tab();
+            app.refresh_connected_devices();
             return;
         }
         _ => {}
