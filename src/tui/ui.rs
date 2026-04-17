@@ -202,7 +202,7 @@ fn render_status_info(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    if let Some(pct) = app.backup_progress_pct {
+    if let Some(pct) = app.backup_overall_pct.or(app.backup_progress_pct) {
         // Show a progress gauge at the bottom of the status info block.
         let inner = block.inner(area);
         f.render_widget(block, area);

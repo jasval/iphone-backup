@@ -82,6 +82,9 @@ pub struct App {
     pub backup_running: bool,
     pub backup_progress: Option<String>,
     pub backup_progress_pct: Option<u16>,
+    pub backup_overall_pct: Option<u16>,
+    pub backup_total_bytes: Option<u64>,
+    pub backup_current_bytes: Option<u64>,
     backup_thread: Option<JoinHandle<()>>,
     pub storage_ok: bool,
     last_refresh: Instant,
@@ -147,6 +150,9 @@ impl App {
             backup_running: false,
             backup_progress: None,
             backup_progress_pct: None,
+            backup_overall_pct: None,
+            backup_total_bytes: None,
+            backup_current_bytes: None,
             backup_thread: None,
             storage_ok: false,
             last_refresh: Instant::now(),
@@ -232,6 +238,9 @@ impl App {
         self.backup_running = true;
         self.backup_progress = None;
         self.backup_progress_pct = None;
+        self.backup_overall_pct = None;
+        self.backup_total_bytes = None;
+        self.backup_current_bytes = None;
         self.auto_scroll = true;
         self.flash = Some("Backup started...".into());
         let tx = self.log_tx.clone();
@@ -374,11 +383,41 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                 }
                 app.restore_log_scroll = app.restore_logs.len().saturating_sub(1);
             } else {
+                // Sentinel: a-priori total bytes from ideviceinfo
+                if let Some(rest) = line.strip_prefix("__BACKUP_TOTAL_BYTES__ ") {
+                    app.backup_total_bytes = rest.trim().parse().ok();
+                    continue;
+                }
+                // Sentinel: bytes transferred from idevicebackup2 progress line
+                if let Some(rest) = line.strip_prefix("__BACKUP_BYTES__ ") {
+                    if let Some((cur, tot)) = rest.trim().split_once('/') {
+                        app.backup_current_bytes = cur.parse().ok();
+                        if app.backup_total_bytes.is_none() {
+                            app.backup_total_bytes = tot.parse().ok();
+                        }
+                    }
+                    if let (Some(cur), Some(tot)) = (app.backup_current_bytes, app.backup_total_bytes) {
+                        if tot > 0 {
+                            let pct = ((cur as f64 / tot as f64) * 100.0).round() as u16;
+                            app.backup_overall_pct = Some(pct.min(100));
+                        }
+                    }
+                    continue;
+                }
                 if let Some(progress_str) = parse_progress(&line) {
                     app.backup_progress_pct = extract_percentage(&progress_str);
                     app.backup_progress = Some(progress_str);
+                    // Monotonic fallback: overall gauge never goes backwards.
+                    if app.backup_overall_pct.is_none() {
+                        if let Some(pct) = app.backup_progress_pct {
+                            app.backup_overall_pct = Some(
+                                app.backup_overall_pct.unwrap_or(0).max(pct)
+                            );
+                        }
+                    }
+                } else {
+                    app.logs.push(line.clone());
                 }
-                app.logs.push(line.clone());
                 if app.logs.len() > 500 {
                     app.logs.drain(..50);
                 }
@@ -398,6 +437,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             app.backup_running = false;
             app.backup_progress = None;
             app.backup_progress_pct = None;
+            app.backup_overall_pct = None;
+            app.backup_total_bytes = None;
+            app.backup_current_bytes = None;
             app.backup_thread = None;
             app.auto_scroll = false;
             app.refresh();
@@ -644,6 +686,9 @@ fn handle_dashboard_key(app: &mut App, code: KeyCode) {
                     app.backup_running = false;
                     app.backup_progress = None;
                     app.backup_progress_pct = None;
+                    app.backup_overall_pct = None;
+                    app.backup_total_bytes = None;
+                    app.backup_current_bytes = None;
                     // Drop the JoinHandle — the thread will finish once the
                     // killed child unblocks child.wait() in run_idevicebackup2.
                     app.backup_thread = None;
