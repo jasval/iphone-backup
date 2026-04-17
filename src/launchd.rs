@@ -17,6 +17,12 @@ const PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
         <string>backup</string>
     </array>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>BREW_BIN:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -86,6 +92,20 @@ pub fn set_schedule(hour: u8, minute: u8) -> Result<()> {
     Ok(())
 }
 
+fn brew_bin() -> String {
+    // Prefer the running brew prefix; fall back to both common locations.
+    if let Ok(out) = Command::new("brew").args(["--prefix"]).output() {
+        if out.status.success() {
+            let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !prefix.is_empty() {
+                return format!("{prefix}/bin");
+            }
+        }
+    }
+    // Apple Silicon and Intel fallback
+    "/opt/homebrew/bin:/usr/local/bin".to_string()
+}
+
 fn write_plist(binary_path: &Path, hour: u8, minute: u8) -> Result<()> {
     let path = plist_path();
     if let Some(parent) = path.parent() {
@@ -93,6 +113,7 @@ fn write_plist(binary_path: &Path, hour: u8, minute: u8) -> Result<()> {
     }
     let content = PLIST_TEMPLATE
         .replace("BINARY_PATH", &binary_path.to_string_lossy())
+        .replace("BREW_BIN", &brew_bin())
         .replace("SCHED_HOUR", &hour.to_string())
         .replace("SCHED_MINUTE", &minute.to_string());
     std::fs::write(&path, content)
@@ -155,6 +176,7 @@ mod tests {
     fn render_plist(binary_path: &str, hour: u8, minute: u8) -> String {
         PLIST_TEMPLATE
             .replace("BINARY_PATH", binary_path)
+            .replace("BREW_BIN", "/opt/homebrew/bin")
             .replace("SCHED_HOUR", &hour.to_string())
             .replace("SCHED_MINUTE", &minute.to_string())
     }
@@ -189,6 +211,7 @@ mod tests {
     fn plist_no_unreplaced_placeholders() {
         let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
         assert!(!xml.contains("BINARY_PATH"));
+        assert!(!xml.contains("BREW_BIN"));
         assert!(!xml.contains("SCHED_HOUR"));
         assert!(!xml.contains("SCHED_MINUTE"));
     }

@@ -61,6 +61,11 @@ fn drain_stream(
         } else {
             clean
         };
+        // Emit bytes sentinel before the normal line so the TUI updates the
+        // overall gauge before displaying the progress text.
+        if let Some((cur, tot)) = parse_bytes_progress(&line) {
+            let _ = tx.send(format!("__BACKUP_BYTES__ {cur}/{tot}"));
+        }
         let _ = tx.send(line.clone());
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -190,6 +195,11 @@ pub fn run(backup_path: &Path, tx: &Sender<String>) -> Result<()> {
             .unwrap_or_else(|| "Unknown".into());
         let dest = backup_path.join(&name);
         std::fs::create_dir_all(&dest)?;
+
+        // Send a priori size so the TUI can show overall progress.
+        if let Some(total_bytes) = query_backup_size(udid) {
+            let _ = tx.send(format!("__BACKUP_TOTAL_BYTES__ {total_bytes}"));
+        }
 
         let conn = if *use_network { "network" } else { "USB" };
         log(
@@ -330,6 +340,73 @@ fn run_idevicebackup2(
     let result = child.wait().map(|s| s.success()).unwrap_or(false);
     let _ = crate::pid::remove_pid();
     result
+}
+
+/// Strip suffixes like " (Network)" that some libimobiledevice versions append to UDIDs.
+fn strip_udid_suffix(s: &str) -> String {
+    s.split_whitespace().next().unwrap_or(s).to_string()
+}
+
+/// Query the device's total data capacity via `ideviceinfo --domain com.apple.disk_usage`.
+/// Returns bytes, used as the a-priori total for the overall progress gauge.
+fn query_backup_size(udid: &str) -> Option<u64> {
+    let out = Command::new("ideviceinfo")
+        .args(["--udid", udid, "--domain", "com.apple.disk_usage"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Prefer AmountDataUsed (actual data), fall back to TotalDataCapacity.
+    let text = String::from_utf8_lossy(&out.stdout);
+    for key in &["AmountDataUsed", "TotalDataCapacity", "TotalDiskCapacity"] {
+        for line in text.lines() {
+            if let Some(val) = line.strip_prefix(&format!("{key}: ")) {
+                if let Ok(n) = val.trim().parse::<u64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse bytes transferred from an idevicebackup2 progress line.
+/// Handles patterns like "(500.0 MB of 1.2 GB)" or "(512000 of 1200000000)".
+/// Returns (current_bytes, total_bytes) if matched.
+fn parse_bytes_progress(line: &str) -> Option<(u64, u64)> {
+    // Find a parenthesised section containing "of"
+    let start = line.find('(')?;
+    let end = line[start..].find(')')? + start;
+    let inner = line[start + 1..end].trim();
+    let (lhs, rhs) = inner.split_once(" of ")?;
+    let cur = parse_human_bytes(lhs.trim())?;
+    let tot = parse_human_bytes(rhs.trim())?;
+    if tot > 0 { Some((cur, tot)) } else { None }
+}
+
+fn parse_human_bytes(s: &str) -> Option<u64> {
+    // Try plain integer first (raw bytes)
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    // Try "500.0 MB" style
+    let mut parts = s.splitn(2, ' ');
+    let num: f64 = parts.next()?.parse().ok()?;
+    let unit = parts.next()?.trim().to_uppercase();
+    let multiplier: u64 = match unit.as_str() {
+        "B"  => 1,
+        "KB" => 1_000,
+        "MB" => 1_000_000,
+        "GB" => 1_000_000_000,
+        "TB" => 1_000_000_000_000,
+        // IEC units
+        "KIB" => 1_024,
+        "MIB" => 1_024 * 1_024,
+        "GIB" => 1_024 * 1_024 * 1_024,
+        _ => return None,
+    };
+    Some((num * multiplier as f64).round() as u64)
 }
 
 fn sanitize_name(raw: &str) -> String {
@@ -474,7 +551,7 @@ fn discover_devices(
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
+            .map(|l| strip_udid_suffix(l.trim()))
             .collect(),
         Ok(o) => {
             log(
@@ -505,7 +582,7 @@ fn discover_devices(
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_string())
+                .map(|l| strip_udid_suffix(l.trim()))
                 .collect(),
             _ => std::collections::HashSet::new(),
         };
@@ -522,12 +599,10 @@ fn discover_devices(
         );
     }
 
-    // Network-reachable devices first, then USB-only.
+    // Network-reachable devices first (including network-only), then USB-only.
     let mut result: Vec<(String, bool)> = Vec::new();
-    for udid in &all_udids {
-        if network_udids.contains(udid) {
-            result.push((udid.clone(), true));
-        }
+    for udid in &network_udids {
+        result.push((udid.clone(), true));
     }
     for udid in &all_udids {
         if !network_udids.contains(udid) {
