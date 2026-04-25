@@ -3,6 +3,41 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LABEL: &str = "com.user.iphone-backup";
+const LAUNCHD_LOG: &str = "/tmp/iphone-backup-launchd.log";
+const LAUNCHD_LOG_ROLLS: u32 = 3;
+
+/// Rotate the launchd stdout/stderr log when it exceeds `max_mb` MiB.
+///
+/// Keeps up to [`LAUNCHD_LOG_ROLLS`] rolls (`.1`, `.2`, …). Best-effort:
+/// any I/O error is swallowed so a rotate failure can never abort a backup.
+pub fn rotate_launchd_log(max_mb: u64) {
+    rotate_log_at(Path::new(LAUNCHD_LOG), max_mb, LAUNCHD_LOG_ROLLS);
+}
+
+/// Rotate a generic log at `path` when it exceeds `max_mb` MiB, keeping
+/// `rolls` prior generations. Extracted for testability.
+pub(crate) fn rotate_log_at(path: &Path, max_mb: u64, rolls: u32) {
+    if max_mb == 0 || rolls == 0 {
+        return;
+    }
+    let max_bytes = max_mb.saturating_mul(1024 * 1024);
+    let size = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(_) => return,
+    };
+    if size <= max_bytes {
+        return;
+    }
+    let base = path.to_string_lossy();
+    let oldest = format!("{base}.{rolls}");
+    let _ = std::fs::remove_file(&oldest);
+    for i in (1..rolls).rev() {
+        let from = format!("{base}.{i}");
+        let to = format!("{base}.{}", i + 1);
+        let _ = std::fs::rename(&from, &to);
+    }
+    let _ = std::fs::rename(path, format!("{base}.1"));
+}
 
 const PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -236,6 +271,53 @@ mod tests {
     fn plist_run_at_load_false() {
         let xml = render_plist("/usr/local/bin/iphone-backup", 2, 0);
         assert!(xml.contains("<false/>"));
+    }
+
+    #[test]
+    fn rotate_is_noop_when_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        std::fs::write(&log, b"tiny").unwrap();
+        rotate_log_at(&log, 1, 3);
+        assert!(log.exists(), "small log should not be rotated");
+        assert!(!dir.path().join("app.log.1").exists());
+    }
+
+    #[test]
+    fn rotate_shifts_rolls_and_drops_oldest() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        // 2 MiB of bytes — over the 1 MiB threshold.
+        std::fs::write(&log, vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        std::fs::write(dir.path().join("app.log.1"), b"old-1").unwrap();
+        std::fs::write(dir.path().join("app.log.2"), b"old-2").unwrap();
+        std::fs::write(dir.path().join("app.log.3"), b"old-3").unwrap();
+
+        rotate_log_at(&log, 1, 3);
+
+        assert!(!log.exists(), "current log should be moved away");
+        assert_eq!(
+            std::fs::read(dir.path().join("app.log.2")).unwrap(),
+            b"old-1",
+            ".1 should have shifted to .2"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("app.log.3")).unwrap(),
+            b"old-2",
+            ".2 should have shifted to .3"
+        );
+        assert!(
+            !dir.path().join("app.log.4").exists(),
+            "should never exceed configured roll count"
+        );
+    }
+
+    #[test]
+    fn rotate_handles_missing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("never-existed.log");
+        // Must not panic or error-out.
+        rotate_log_at(&log, 1, 3);
     }
 
     #[test]

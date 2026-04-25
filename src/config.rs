@@ -12,6 +12,32 @@ pub struct Config {
     /// Minute (0–59) at which launchd runs the daily backup.
     #[serde(default = "default_minute")]
     pub schedule_minute: u8,
+    /// Kill `idevicebackup2` if it hasn't finished after this many minutes.
+    #[serde(default = "default_timeout_minutes")]
+    pub backup_timeout_minutes: u64,
+    /// Minimum free space (GiB) required on the backup volume before a run.
+    #[serde(default = "default_min_free_gb")]
+    pub min_free_gb: u64,
+    /// Fire a macOS notification when a scheduled (launchd) run fails.
+    #[serde(default = "default_notify_on_failure")]
+    pub notify_on_failure: bool,
+    /// Rotate the launchd stdout/stderr log when it exceeds this size (MiB).
+    #[serde(default = "default_launchd_log_max_mb")]
+    pub launchd_log_max_mb: u64,
+    /// If set, after each successful backup, archive the device folder and
+    /// keep at most this many prior archives per device. `None` disables
+    /// count-based retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_keep_last: Option<u32>,
+    /// If set, keep archives younger than this many days. An archive is kept
+    /// if it satisfies EITHER rule. `None` disables age-based retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_keep_days: Option<u32>,
+    /// Command (invoked via `sh -c`) whose stdout is fed as the backup
+    /// password to `idevicebackup2 -i` when an encrypted backup is required.
+    /// Leave unset to disable encrypted-backup handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_password_cmd: Option<String>,
 }
 
 fn default_hour() -> u8 {
@@ -19,6 +45,18 @@ fn default_hour() -> u8 {
 }
 fn default_minute() -> u8 {
     0
+}
+fn default_timeout_minutes() -> u64 {
+    120
+}
+fn default_min_free_gb() -> u64 {
+    10
+}
+fn default_notify_on_failure() -> bool {
+    true
+}
+fn default_launchd_log_max_mb() -> u64 {
+    5
 }
 
 impl Default for Config {
@@ -28,6 +66,13 @@ impl Default for Config {
             backup_path: home.join("Backups/iOS").to_string_lossy().into_owned(),
             schedule_hour: default_hour(),
             schedule_minute: default_minute(),
+            backup_timeout_minutes: default_timeout_minutes(),
+            min_free_gb: default_min_free_gb(),
+            notify_on_failure: default_notify_on_failure(),
+            launchd_log_max_mb: default_launchd_log_max_mb(),
+            retention_keep_last: None,
+            retention_keep_days: None,
+            encryption_password_cmd: None,
         }
     }
 }
@@ -52,10 +97,7 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        crate::status::atomic_write(&path, toml::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 
@@ -90,6 +132,7 @@ mod tests {
             backup_path: "/mnt/backup".into(),
             schedule_hour: 3,
             schedule_minute: 30,
+            ..Config::default()
         };
         let s = toml::to_string_pretty(&c).unwrap();
         let c2: Config = toml::from_str(&s).unwrap();
@@ -126,6 +169,7 @@ schedule_minute = 45
             backup_path: "/tmp/backups".into(),
             schedule_hour: 0,
             schedule_minute: 0,
+            ..Config::default()
         };
         assert_eq!(c.backup_path(), PathBuf::from("/tmp/backups"));
     }
@@ -136,6 +180,7 @@ schedule_minute = 45
             backup_path: "/tmp/backups".into(),
             schedule_hour: 0,
             schedule_minute: 0,
+            ..Config::default()
         };
         assert_eq!(c.status_dir(), PathBuf::from("/tmp/backups/.status"));
     }
@@ -146,6 +191,7 @@ schedule_minute = 45
             backup_path: "/tmp/backups".into(),
             schedule_hour: 0,
             schedule_minute: 0,
+            ..Config::default()
         };
         assert_eq!(
             c.log_path(),
@@ -162,6 +208,7 @@ schedule_minute = 45
             backup_path: "/custom/path".into(),
             schedule_hour: 14,
             schedule_minute: 30,
+            ..Config::default()
         };
 
         std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();

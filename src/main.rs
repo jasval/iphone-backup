@@ -1,12 +1,22 @@
+#[cfg(not(target_os = "macos"))]
+compile_error!(
+    "iphone-backup is macOS-only: it depends on launchd, ioreg, osascript, and Apple's plist tooling."
+);
+
 mod backup;
 mod config;
 mod device;
+mod imd;
 mod launchd;
+mod notify;
 mod pid;
+mod preflight;
 mod restore;
+mod retention;
 mod status;
 mod tui;
 mod update;
+mod verify;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -36,6 +46,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Cmd::Backup) => {
+            launchd::rotate_launchd_log(config.launchd_log_max_mb);
             let (tx, rx) = std::sync::mpsc::channel::<String>();
             // Print each log line to stderr so launchd captures it
             std::thread::spawn(move || {
@@ -43,7 +54,19 @@ fn main() -> Result<()> {
                     eprintln!("{line}");
                 }
             });
-            backup::run(&config.backup_path(), &tx)?;
+            let outcome = backup::run(&config, &tx)?;
+            if outcome.is_failure()
+                && config.notify_on_failure
+                && notify::running_under_launchd()
+            {
+                notify::display_notification(
+                    "iPhone Backup failed",
+                    &outcome.summary_line(),
+                );
+            }
+            if outcome.is_failure() {
+                std::process::exit(1);
+            }
         }
         Some(Cmd::Config) => {
             println!("Config file: {}", config::Config::config_path()?.display());

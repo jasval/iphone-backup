@@ -1,6 +1,8 @@
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
+use crate::imd;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Connection {
     Usb,
@@ -19,27 +21,11 @@ pub struct Device {
 }
 
 pub fn list_connected() -> Vec<Device> {
-    let all_out = match Command::new("idevice_id").arg("--list").output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    };
-    let net_out = match Command::new("idevice_id").args(["--network", "--list"]).output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    };
+    let usb_set: std::collections::HashSet<String> =
+        imd::list_usb().unwrap_or_default().into_iter().collect();
+    let net_set: std::collections::HashSet<String> =
+        imd::list_network().unwrap_or_default().into_iter().collect();
 
-    let usb_set: std::collections::HashSet<String> = all_out
-        .lines()
-        .map(|l| strip_udid_suffix(l.trim()))
-        .filter(|l| !l.is_empty())
-        .collect();
-    let net_set: std::collections::HashSet<String> = net_out
-        .lines()
-        .map(|l| strip_udid_suffix(l.trim()))
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    // Deduplicate; USB-connected devices come first.
     let mut seen = std::collections::HashSet::new();
     let udids: Vec<String> = usb_set
         .iter()
@@ -62,7 +48,7 @@ pub fn list_connected() -> Vec<Device> {
                 (true, false) => Connection::Usb,
                 _ => Connection::Network,
             };
-            let info = device_info_all(&udid);
+            let info = imd::device_info(&udid).unwrap_or_default();
             let name = info
                 .get("DeviceName")
                 .cloned()
@@ -73,7 +59,6 @@ pub fn list_connected() -> Vec<Device> {
         })
         .collect();
 
-    // USB (or both) first, then network-only.
     devices.sort_by_key(|d| matches!(d.connection, Connection::Network) as u8);
     devices
 }
@@ -122,7 +107,6 @@ fn detect_usb_ios() -> Vec<Device> {
         _ => return vec![],
     };
 
-    // Split into per-device blocks at "+-o" boundaries.
     let mut devices = Vec::new();
     let mut vendor: Option<u32> = None;
     let mut product_name: Option<String> = None;
@@ -132,11 +116,10 @@ fn detect_usb_ios() -> Vec<Device> {
         let trimmed = line.trim();
 
         if trimmed.starts_with("+-o") {
-            // Flush previous block if it was an Apple mobile device.
             if vendor == Some(1452) {
                 if let Some(name) = product_name.take() {
                     if name.contains("iPhone") || name.contains("iPad") || name.contains("iPod") {
-                        let udid = serial.take().unwrap_or_default();
+                        let udid = imd::normalize_udid(&serial.take().unwrap_or_default());
                         devices.push(Device {
                             udid,
                             name,
@@ -153,20 +136,19 @@ fn detect_usb_ios() -> Vec<Device> {
             continue;
         }
 
-        if let Some(val) = parse_ioreg_int(trimmed, "idVendor") {
+        if let Some(val) = imd::parse_ioreg_int(trimmed, "idVendor") {
             vendor = Some(val);
-        } else if let Some(val) = parse_ioreg_str(trimmed, "kUSBProductString") {
+        } else if let Some(val) = imd::parse_ioreg_str(trimmed, "kUSBProductString") {
             product_name = Some(val);
-        } else if let Some(val) = parse_ioreg_str(trimmed, "kUSBSerialNumberString") {
+        } else if let Some(val) = imd::parse_ioreg_str(trimmed, "kUSBSerialNumberString") {
             serial = Some(val);
         }
     }
 
-    // Flush last block.
     if vendor == Some(1452) {
         if let Some(name) = product_name {
             if name.contains("iPhone") || name.contains("iPad") || name.contains("iPod") {
-                let udid = serial.unwrap_or_default();
+                let udid = imd::normalize_udid(&serial.unwrap_or_default());
                 devices.push(Device {
                     udid,
                     name,
@@ -179,47 +161,4 @@ fn detect_usb_ios() -> Vec<Device> {
     }
 
     devices
-}
-
-fn strip_udid_suffix(s: &str) -> String {
-    s.split_whitespace().next().unwrap_or(s).to_string()
-}
-
-fn parse_ioreg_str(line: &str, key: &str) -> Option<String> {
-    // Matches: "key" = "value"
-    let prefix = format!("\"{}\" = \"", key);
-    let s = line.strip_prefix(&prefix)?;
-    let val = s.strip_suffix('"')?;
-    Some(val.to_string())
-}
-
-fn parse_ioreg_int(line: &str, key: &str) -> Option<u32> {
-    // Matches: "key" = 1234
-    let prefix = format!("\"{}\" = ", key);
-    let s = line.strip_prefix(&prefix)?;
-    s.parse().ok()
-}
-
-/// Fetch all device properties in one `ideviceinfo` call.
-fn device_info_all(udid: &str) -> std::collections::HashMap<String, String> {
-    let out = match Command::new("ideviceinfo")
-        .args(["--udid", udid])
-        .output()
-    {
-        Ok(o) if o.status.success() => o.stdout,
-        _ => return std::collections::HashMap::new(),
-    };
-    String::from_utf8_lossy(&out)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(2, ": ");
-            let key = parts.next()?.trim().to_string();
-            let val = parts.next()?.trim().to_string();
-            if key.is_empty() || val.is_empty() {
-                None
-            } else {
-                Some((key, val))
-            }
-        })
-        .collect()
 }

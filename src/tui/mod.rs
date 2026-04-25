@@ -244,9 +244,9 @@ impl App {
         self.auto_scroll = true;
         self.flash = Some("Backup started...".into());
         let tx = self.log_tx.clone();
-        let backup_path = self.config.backup_path();
+        let config = self.config.clone();
         self.backup_thread = Some(std::thread::spawn(move || {
-            let _ = backup::run(&backup_path, &tx);
+            let _ = backup::run(&config, &tx);
         }));
     }
 

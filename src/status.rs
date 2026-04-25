@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{self, Write};
 use std::path::Path;
+
+use crate::verify::VerificationReport;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceStatus {
@@ -11,6 +15,33 @@ pub struct DeviceStatus {
     pub last_run: String,
     pub size: Option<String>,
     pub elapsed_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationReport>,
+}
+
+/// Atomically write `bytes` to `path`: write to a sibling `.tmp` file, fsync,
+/// rename. A crash mid-write leaves the destination intact.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let mut tmp = path.to_path_buf();
+    tmp.set_file_name(format!("{}.tmp", file_name.to_string_lossy()));
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    {
+        let mut f = File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +231,45 @@ mod tests {
     fn tail_log_returns_empty_for_missing_file() {
         let lines = tail_log(std::path::Path::new("/nonexistent/log.txt"), 5);
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn atomic_write_creates_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        atomic_write(&path, b"hello").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        std::fs::write(&path, b"old").unwrap();
+        atomic_write(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn atomic_write_leaves_original_intact_when_tmp_is_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        std::fs::write(&path, b"original").unwrap();
+        // Simulate a crash mid-write: a stray `.tmp` exists but the real file
+        // is untouched.
+        std::fs::write(dir.path().join("out.json.tmp"), b"partial").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        // A subsequent successful atomic_write still replaces the destination.
+        atomic_write(&path, b"fresh").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"fresh");
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeper/out.json");
+        atomic_write(&path, b"x").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"x");
     }
 
     #[test]
